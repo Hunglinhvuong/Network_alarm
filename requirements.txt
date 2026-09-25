@@ -1,0 +1,7 @@
+psycopg2-binary>=2.9
+python-dotenv>=1.0
+requests>=2.31
+# oracledb chỉ cần khi ALARM_SOURCE=oracle (thin mode, không cần Oracle client)
+oracledb>=2.0
+# bot tra cứu Telegram (chỉ cần khi chạy alerting/bot/app.py)
+python-telegram-bot[job-queue]>=21.6
