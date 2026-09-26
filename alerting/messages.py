@@ -8,9 +8,14 @@ Soạn text cảnh báo Telegram (HTML parse_mode). Tách riêng khỏi notifier
     cho toàn node, không liệt kê phân tích riêng từng station con.
   - Station partial-down (1 phần device) -> cảnh báo riêng theo TỪNG STATION, RCA
     chỉ chạy bước 2 + 3 (rca.engine.analyze_station).
+
+THEO MÚIPLÁN GIỜ: tất cả datetime.now() được thay bằng local_now() để dùng múi giờ
+APP_TIMEZONE thay vì UTC của hệ thống.
 """
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
+from config.settings import APP_TIMEZONE
 from escalation.engine import EscalationGroup
 from rca.engine import NodeRCAResult, StationRCAResult
 
@@ -19,6 +24,15 @@ _ICON_PARTIAL = "🟠"
 _ICON_UP = "🟢"
 _ICON_TRANS = "📡"
 _ICON_STATION = "🏢"
+
+
+def local_now() -> datetime:
+    """Trả về datetime hiện tại theo múi giờ APP_TIMEZONE.
+    
+    Dùng hàm này thay vì datetime.now() để đảm bảo tất cả timestamp trong alert
+    messages đều theo cùng múi giờ cục bộ.
+    """
+    return datetime.now(ZoneInfo(APP_TIMEZONE))
 
 
 def format_down_alert(group: EscalationGroup, rca_result: NodeRCAResult) -> str:
@@ -31,7 +45,7 @@ def format_down_alert(group: EscalationGroup, rca_result: NodeRCAResult) -> str:
         "",
         rca_result.to_text(),
         "",
-        f"Thời điểm phát hiện: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Thời điểm phát hiện: {local_now().strftime('%Y-%m-%d %H:%M:%S')} ({APP_TIMEZONE})",
     ]
     return "\n".join(lines)
 
@@ -43,7 +57,7 @@ def format_recovered_alert(group: EscalationGroup) -> str:
         f"Số trạm đã khôi phục: {len(group.station_site_ids)}",
         "Trạm: " + ", ".join(sorted(group.station_site_codes)),
         "",
-        f"Thời điểm: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Thời điểm: {local_now().strftime('%Y-%m-%d %H:%M:%S')} ({APP_TIMEZONE})",
     ]
     return "\n".join(lines)
 
@@ -57,7 +71,7 @@ def format_partial_station_alert(rca_result: StationRCAResult) -> str:
         "",
         rca_result.to_text(),
         "",
-        f"Thời điểm phát hiện: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Thời điểm phát hiện: {local_now().strftime('%Y-%m-%d %H:%M:%S')} ({APP_TIMEZONE})",
     ]
     return "\n".join(lines)
 
@@ -67,6 +81,6 @@ def format_partial_station_recovered(station: dict) -> str:
     lines = [
         f"{_ICON_UP} <b>ĐÃ KHÔI PHỤC</b> 🏢 <b>{station['site_name']}</b> ({station['site_code']})",
         "",
-        f"Thời điểm: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Thời điểm: {local_now().strftime('%Y-%m-%d %H:%M:%S')} ({APP_TIMEZONE})",
     ]
     return "\n".join(lines)
