@@ -7,21 +7,14 @@ dữ liệu trạng thái duy nhất, tránh 2 nơi định nghĩa full-down/par
   - power_affected (>=1 device power_fail active) -> flag độc lập, luôn kèm báo cáo
 
 RCAP (Root Cause Analysis Procedure) — mỗi bước dừng ngay khi có bằng chứng:
-  Bước 1 (chỉ full_down, có >1 station trong group): đồng bộ mất liên lạc trong cùng
-      node cha, cửa sổ ±NODE_SYNC_WINDOW_MINUTES. Lưu ý: escalation.compute_escalation()
-      đã validate rồi, nên nếu group có >1 station thì chắc chắn toàn bộ full-down +
-      trong window. Bước 1 ở đây chỉ cần double-check và sinh evidence.
+  Bước 1 (chỉ full_down): đồng bộ mất liên lạc trong cùng node cha, cửa sổ ±10 phút.
+      Có bằng chứng -> dừng, báo cáo theo "node cha lớn nhất" (lấy từ escalation
+      group — vốn đã climb lên node cao nhất mà mọi station con cháu đều full-down).
   Bước 2: power_fail của BẤT KỲ device nào trong station, trong 12h gần nhất tính
       từ NOW, xảy ra trước loss_comm <= 6h.
   Bước 3: trạm lân cận (neighbor_edge, ≤ NEIGHBOR_DISTANCE_KM) có power_fail active
       không -> khuyến nghị "x/y trạm lân cận mất điện".
   Không bước nào có bằng chứng -> isolated.
-
-Đặc biệt: Bước 1 bây giờ PHẢI đảm bảo TẤT CẢ station trong group:
-  - Là full-down
-  - Nằm trong ±NODE_SYNC_WINDOW_MINUTES
-  Nếu có 1 station không thỏa 2 điều kiện này -> KHÔNG báo "sync_parent", tiếp tục
-  bước 2/3 thay vào đó.
 """
 import logging
 from dataclasses import dataclass, field
@@ -72,9 +65,7 @@ class StationRCAResult:
         s = self.station
         lines = []
         if s["comm_status"] == FULL_DOWN:
-            lines.append(
-                f"Trạng thái: 🔴 MẤT LIÊN LẠC TOÀN BỘ ({len(s['devices'])}/{len(s['devices'])} thiết bị)"
-            )
+            lines.append(f"Trạng thái: 🔴 MẤT LIÊN LẠC TOÀN BỘ ({len(s['devices'])}/{len(s['devices'])} thiết bị)")
         else:
             lines.append(
                 f"Trạng thái: 🟠 MẤT LIÊN LẠC MỘT PHẦN — loại thiết bị ảnh hưởng: "
@@ -100,23 +91,16 @@ class StationRCAResult:
         if self.step3_evidence:
             ev = self.step3_evidence
             extra = f" ({', '.join(ev['affected_codes'])})" if ev["affected_codes"] else ""
-            lines.append(
-                f"- Trạm lân cận mất điện: {ev['affected_count']}/{ev['total_count']} trạm{extra}"
-            )
+            lines.append(f"- Trạm lân cận mất điện: {ev['affected_count']}/{ev['total_count']} trạm{extra}")
         return "\n".join(lines)
 
 
 def _step1_sync_parent(station: dict) -> dict:
     """
     Dùng lại escalation.compute_escalation() để tìm group (node cha lớn nhất) mà
-    station này thuộc về. Lưu ý: compute_escalation đã validate rồi (full-down +
-    trong window), nên nếu có group chứa station này + >1 member, thì chắc chắn
-    toàn bộ thỏa điều kiện sync.
-
-    Tuy nhiên, để chắc chắn, ta vẫn kiểm tra lại:
-    1. Group chỉ có station này 1 mình -> không đồng bộ
-    2. Group có >1 station nhưng không phải TRANS_NODE -> không đồng bộ
-    3. Có station khác trong group, và tất cả nằm trong window -> đồng bộ
+    station này thuộc về (compute_escalation chỉ gồm station full-down). Nếu group
+    chỉ có đúng station này -> không đồng bộ. Nếu có station khác -> kiểm tra thêm
+    điều kiện cửa sổ ±NODE_SYNC_WINDOW_MINUTES trước khi kết luận.
     """
     groups = compute_escalation()
     group = next((g for g in groups if station["site_id"] in g.station_site_ids), None)
@@ -127,33 +111,27 @@ def _step1_sync_parent(station: dict) -> dict:
     if not other_site_ids:
         return None
 
-    # Double-check: tất cả other station phải full-down và nằm trong window
-    try:
-        other_stations = [get_station_full_status(sid) for sid in other_site_ids]
-    except ValueError:
-        return None
+    window_start = station["earliest_loss_comm_start"] - timedelta(minutes=NODE_SYNC_WINDOW_MINUTES)
+    window_end = station["earliest_loss_comm_start"] + timedelta(minutes=NODE_SYNC_WINDOW_MINUTES)
 
-    # Bắt buộc tất cả phải full-down
-    if any(s["comm_status"] != FULL_DOWN for s in other_stations):
-        logger.warning(
-            "Station %s: group có member partial-down, không xem là sync",
-            station["site_code"],
+    with get_cursor(dict_cursor=True, commit=False) as cur:
+        cur.execute(
+            """
+            SELECT s2.site_id, s2.site_code, MIN(ae2.start_time) AS start_time
+            FROM device d2
+            JOIN station s2 ON s2.site_id = d2.site_id
+            JOIN alarm_event ae2
+                ON ae2.device_id = d2.device_id
+               AND ae2.alarm_name = 'loss_comm' AND ae2.status = 'active'
+            WHERE s2.site_id = ANY(%(site_ids)s)
+            GROUP BY s2.site_id, s2.site_code
+            HAVING MIN(ae2.start_time) BETWEEN %(window_start)s AND %(window_end)s
+            """,
+            {"site_ids": other_site_ids, "window_start": window_start, "window_end": window_end},
         )
-        return None
+        siblings_in_window = cur.fetchall()
 
-    # Kiểm tra window: tất cả station (gồm cả station này) phải trong window
-    all_starts = [station["earliest_loss_comm_start"]] + [
-        s["earliest_loss_comm_start"] for s in other_stations
-    ]
-    earliest = min(all_starts)
-    latest = max(all_starts)
-    if (latest - earliest) > timedelta(minutes=NODE_SYNC_WINDOW_MINUTES):
-        logger.warning(
-            "Station %s: group ngoài window ±%d phút (diff: %s), không xem là sync",
-            station["site_code"],
-            NODE_SYNC_WINDOW_MINUTES,
-            latest - earliest,
-        )
+    if not siblings_in_window:
         return None
 
     return {
@@ -169,9 +147,7 @@ def _step2_power_fail(station: dict) -> dict:
     NOW, xảy ra trước loss_comm <= 6h."""
     now = datetime.now()
     lookback_start = now - timedelta(hours=POWER_FAIL_LOOKBACK_HOURS)
-    correlation_start = station["earliest_loss_comm_start"] - timedelta(
-        hours=POWER_FAIL_CORRELATION_HOURS
-    )
+    correlation_start = station["earliest_loss_comm_start"] - timedelta(hours=POWER_FAIL_CORRELATION_HOURS)
 
     with get_cursor(dict_cursor=True, commit=False) as cur:
         cur.execute(
@@ -199,9 +175,7 @@ def _step2_power_fail(station: dict) -> dict:
     if row is None:
         return None
 
-    hours_before = (
-        station["earliest_loss_comm_start"] - row["start_time"]
-    ).total_seconds() / 3600.0
+    hours_before = (station["earliest_loss_comm_start"] - row["start_time"]).total_seconds() / 3600.0
     return {
         "alarm_id": row["alarm_id"],
         "start_time": row["start_time"],
@@ -233,9 +207,7 @@ def _fetch_neighbor_power_rows(site_id: int) -> list:
         return cur.fetchall()
 
 
-def _step2_power_fail_multi(
-    site_ids: list, loss_comm_start
-) -> dict:
+def _step2_power_fail_multi(site_ids: list, loss_comm_start) -> dict:
     """Bản gộp bước 2: power_fail của BẤT KỲ device nào thuộc BẤT KỲ station nào
     trong node (site_ids), tương quan với thời điểm mất liên lạc sớm nhất của node."""
     now = datetime.now()
@@ -279,6 +251,7 @@ def _step2_power_fail_multi(
     }
 
 
+
 def _step3_neighbor_power(station: dict) -> dict:
     """Trạm lân cận (neighbor_edge, ≤ NEIGHBOR_DISTANCE_KM) có power_fail active không."""
     rows = _fetch_neighbor_power_rows(station["site_id"])
@@ -308,9 +281,7 @@ def _step3_neighbor_power_multi(site_ids: list) -> dict:
             if r["site_id"] in member_ids:
                 continue
             neighbor_code[r["site_id"]] = r["site_code"]
-            neighbor_has_power[r["site_id"]] = (
-                neighbor_has_power.get(r["site_id"], False) or r["has_power_fail"]
-            )
+            neighbor_has_power[r["site_id"]] = neighbor_has_power.get(r["site_id"], False) or r["has_power_fail"]
 
     total_count = len(neighbor_has_power)
     if total_count == 0:
@@ -328,7 +299,6 @@ def _step3_neighbor_power_multi(site_ids: list) -> dict:
 class NodeRCAResult:
     """Kết quả RCA cho CẢ 1 node cha (escalation group) — chỉ 1 kết luận duy nhất
     cho toàn node, không liệt kê phân tích riêng từng station con."""
-
     node_code: str
     node_name: str
     node_type: str
@@ -361,9 +331,7 @@ class NodeRCAResult:
         if self.step3_evidence:
             ev = self.step3_evidence
             extra = f" ({', '.join(ev['affected_codes'])})" if ev["affected_codes"] else ""
-            lines.append(
-                f"- Trạm lân cận mất điện: {ev['affected_count']}/{ev['total_count']} trạm{extra}"
-            )
+            lines.append(f"- Trạm lân cận mất điện: {ev['affected_count']}/{ev['total_count']} trạm{extra}")
 
         if self.power_affected_codes:
             lines.append(f"⚡ Ghi nhận mất điện tại trạm: {', '.join(self.power_affected_codes)}")
@@ -376,28 +344,16 @@ def analyze_group(group) -> NodeRCAResult:
     Chạy RCAP MỘT LẦN cho toàn bộ node cha (group) mà escalation.compute_escalation()
     đã gộp lên — KHÔNG chạy lại RCA riêng cho từng station con bên trong.
 
-    LƯU Ý: compute_escalation() đã validate rồi (toàn bộ station full-down + trong
-    window ±NODE_SYNC_WINDOW_MINUTES), nên:
-    - group có >1 station: chắc chắn bước 1 (sync_parent) đạt
-    - group chỉ có 1 station (node_type=STATION): bước 1 bỏ qua, chạy bước 2 -> 3
-
-    Tuy vậy, ta vẫn cần re-check để đảm bảo tính chính xác (phòng trường hợp dữ
-    liệu thay đổi giữa escalation và RCA):
-    - Nếu 1 station trở thành partial-down -> không báo sync, tiếp tục bước 2/3
-    - Nếu 1 station ra khỏi window -> không báo sync, tiếp tục bước 2/3
+    - group có >1 station: bước 1 = kiểm tra toàn bộ station trong group có mất
+      liên lạc đồng bộ trong cửa sổ ±NODE_SYNC_WINDOW_MINUTES không (so sánh
+      earliest_loss_comm_start sớm nhất và trễ nhất trong group).
+    - group chỉ có 1 station (node_type=STATION, không có sibling nào down cùng):
+      bước 1 tự động bỏ qua (không có gì để so sánh đồng bộ), chạy thẳng bước 2.
+    - Không đạt bước 1 -> bước 2 (power_fail bất kỳ device nào trong TOÀN BỘ group)
+      -> không đạt -> bước 3 (neighbor của TOÀN BỘ group, loại trừ chính các
+      station thành viên).
     """
-    try:
-        stations = [get_station_full_status(sid) for sid in group.station_site_ids]
-    except ValueError as e:
-        logger.error("RCA node=%s: lỗi lấy station status: %s", group.node_code, e)
-        return NodeRCAResult(
-            node_code=group.node_code,
-            node_name=group.node_name,
-            node_type=group.node_type,
-            station_codes=[],
-            conclusion=CONCLUSION_ISOLATED,
-        )
-
+    stations = [get_station_full_status(sid) for sid in group.station_site_ids]
     station_codes = sorted(s["site_code"] for s in stations)
     power_affected_codes = sorted(s["site_code"] for s in stations if s["power_affected"])
 
@@ -409,39 +365,15 @@ def analyze_group(group) -> NodeRCAResult:
         power_affected_codes=power_affected_codes,
     )
 
-    # Bước 1: kiểm tra xem có >1 station và đều full-down + trong window không
     if len(stations) > 1:
-        # Re-check: tất cả phải full-down
-        if all(s["comm_status"] == FULL_DOWN for s in stations):
-            starts = [s["earliest_loss_comm_start"] for s in stations]
-            earliest, latest = min(starts), max(starts)
-            if (latest - earliest) <= timedelta(minutes=NODE_SYNC_WINDOW_MINUTES):
-                result.conclusion = CONCLUSION_SYNC_PARENT
-                result.step1_evidence = {
-                    "count": len(stations),
-                    "earliest": earliest,
-                    "latest": latest,
-                }
-                logger.info(
-                    "RCA node=%s -> %s (bước 1, %d trạm)",
-                    group.node_code,
-                    result.conclusion,
-                    len(stations),
-                )
-                return result
-            else:
-                logger.warning(
-                    "RCA node=%s: re-check bước 1 thất bại (out of window: %s)",
-                    group.node_code,
-                    latest - earliest,
-                )
-        else:
-            logger.warning(
-                "RCA node=%s: re-check bước 1 thất bại (có station partial-down)",
-                group.node_code,
-            )
+        starts = [s["earliest_loss_comm_start"] for s in stations]
+        earliest, latest = min(starts), max(starts)
+        if (latest - earliest) <= timedelta(minutes=NODE_SYNC_WINDOW_MINUTES):
+            result.conclusion = CONCLUSION_SYNC_PARENT
+            result.step1_evidence = {"count": len(stations), "earliest": earliest, "latest": latest}
+            logger.info("RCA node=%s -> %s (bước 1, %d trạm)", group.node_code, result.conclusion, len(stations))
+            return result
 
-    # Bước 2: power_fail của BẤT KỲ device nào trong node
     site_ids = [s["site_id"] for s in stations]
     earliest_overall = min(s["earliest_loss_comm_start"] for s in stations)
 
@@ -452,7 +384,6 @@ def analyze_group(group) -> NodeRCAResult:
         logger.info("RCA node=%s -> %s (bước 2)", group.node_code, result.conclusion)
         return result
 
-    # Bước 3: neighbor của toàn node
     step3 = _step3_neighbor_power_multi(site_ids)
     if step3 and step3["affected_count"] > 0:
         result.conclusion = CONCLUSION_AREA_POWER
@@ -461,11 +392,7 @@ def analyze_group(group) -> NodeRCAResult:
         return result
 
     result.conclusion = CONCLUSION_ISOLATED
-    logger.info(
-        "RCA node=%s -> %s (không bước nào có bằng chứng)",
-        group.node_code,
-        result.conclusion,
-    )
+    logger.info("RCA node=%s -> %s (không bước nào có bằng chứng)", group.node_code, result.conclusion)
     return result
 
 
@@ -485,33 +412,23 @@ def analyze_station(site_id: int) -> StationRCAResult:
         if step1:
             result.conclusion = CONCLUSION_SYNC_PARENT
             result.step1_evidence = step1
-            logger.info(
-                "RCA station=%s -> %s (bước 1)", station["site_code"], result.conclusion
-            )
+            logger.info("RCA station=%s -> %s (bước 1)", station["site_code"], result.conclusion)
             return result
 
     step2 = _step2_power_fail(station)
     if step2:
         result.conclusion = CONCLUSION_POWER_FAIL
         result.step2_evidence = step2
-        logger.info(
-            "RCA station=%s -> %s (bước 2)", station["site_code"], result.conclusion
-        )
+        logger.info("RCA station=%s -> %s (bước 2)", station["site_code"], result.conclusion)
         return result
 
     step3 = _step3_neighbor_power(station)
     if step3 and step3["affected_count"] > 0:
         result.conclusion = CONCLUSION_AREA_POWER
         result.step3_evidence = step3
-        logger.info(
-            "RCA station=%s -> %s (bước 3)", station["site_code"], result.conclusion
-        )
+        logger.info("RCA station=%s -> %s (bước 3)", station["site_code"], result.conclusion)
         return result
 
     result.conclusion = CONCLUSION_ISOLATED
-    logger.info(
-        "RCA station=%s -> %s (không bước nào có bằng chứng)",
-        station["site_code"],
-        result.conclusion,
-    )
+    logger.info("RCA station=%s -> %s (không bước nào có bằng chứng)", station["site_code"], result.conclusion)
     return result
