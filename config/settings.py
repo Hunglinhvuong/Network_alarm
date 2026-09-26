@@ -11,6 +11,10 @@ from dotenv import load_dotenv
 # override=False: biến ENV đã export sẵn trong shell/systemd luôn được ưu tiên hơn .env.
 load_dotenv(override=False)
 
+# ---------- Timezone ----------
+# Múi giờ cho toàn bộ hệ thống: Database session, Logging, Alert messages
+APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Asia/Ho_Chi_Minh")
+
 # ---------- Database (PostgreSQL) ----------
 DB_CONFIG = {
     "host": os.environ.get("PG_HOST", "localhost"),

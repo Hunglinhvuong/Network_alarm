@@ -3,6 +3,8 @@ Entry point cho Alarm Collector. Chạy: python main_collector.py
 
 Vòng lặp: poll collector -> sync vào DB -> ngủ (interval adaptive: nhanh hơn khi
 đang có alarm active, chậm lại khi hệ thống yên để tiết kiệm tài nguyên trên Wyse 5010).
+
+THEO MÚI GIỜ: logging được cấu hình để dùng múi giờ APP_TIMEZONE thay vì UTC của hệ thống.
 """
 import logging
 import signal
@@ -11,24 +13,25 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from config.settings import LOG_LEVEL, POLL_INTERVAL_NORMAL_SEC, POLL_INTERVAL_ACTIVE_SEC
+from config.settings import LOG_LEVEL, POLL_INTERVAL_NORMAL_SEC, POLL_INTERVAL_ACTIVE_SEC, APP_TIMEZONE
 from collectors.factory import build_collector
 from collectors.alarm_sync import sync_alarms, has_active_alarms
 from alarm_pipeline import AlarmPipeline
 from db.connection import close_connection
 
 
-# Định nghĩa hàm lấy thời gian thực tế theo múi giờ Việt Nam
-def vietnam_time_converter(*args):
-    return datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).timetuple()
+# Định nghĩa hàm lấy thời gian thực tế theo múi giờ ứng dụng (APP_TIMEZONE)
+def app_time_converter(*args):
+    """Converter cho logging.Formatter để hiển thị thời gian theo múi giờ ứng dụng."""
+    return datetime.now(ZoneInfo(APP_TIMEZONE)).timetuple()
 
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-# Ép toàn bộ hệ thống logging sử dụng múi giờ Việt Nam thay vì UTC của hệ điều hành
-logging.Formatter.converter = vietnam_time_converter
+# Ép toàn bộ hệ thống logging sử dụng múi giờ ứng dụng thay vì UTC của hệ điều hành
+logging.Formatter.converter = app_time_converter
 
 logger = logging.getLogger("main_collector")
 
@@ -47,7 +50,7 @@ def run_loop():
 
     collector = build_collector()
     pipeline = AlarmPipeline()
-    logger.info("Alarm Collector khởi động, nguồn: %s", collector.__class__.__name__)
+    logger.info("Alarm Collector khởi động, nguồn: %s (múi giờ: %s)", collector.__class__.__name__, APP_TIMEZONE)
 
     while _running:
         cycle_start = time.time()
