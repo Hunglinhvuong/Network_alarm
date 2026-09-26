@@ -14,6 +14,9 @@ from db.connection import get_cursor
 
 logger = logging.getLogger(__name__)
 
+FULL_DOWN = "full_down"
+PARTIAL_DOWN = "partial_down"
+
 
 def get_station_loss_comm_breakdown() -> dict:
     """
@@ -111,3 +114,98 @@ def get_partial_loss_comm_devices() -> list:
                 }
             )
     return partial
+
+
+def get_partial_down_stations() -> dict:
+    """
+    site_id -> {site_code, site_name} — CHỈ station có loss_comm 1 PHẦN (không toàn
+    bộ). Dùng để diff theo từng chu kỳ poll ở mức STATION (không phải mức device)
+    -> RCA và cảnh báo giờ chạy theo station, xem rca.engine.analyze_station().
+    """
+    breakdown = get_station_loss_comm_breakdown()
+    return {
+        site_id: {"site_code": info["site_code"], "site_name": info["site_name"]}
+        for site_id, info in breakdown.items()
+        if not info["all_down"]
+    }
+
+
+def get_station_full_status(site_id: int) -> dict:
+    """
+    Chi tiết đầy đủ 1 station — dùng bởi RCA engine (rca.engine.analyze_station):
+    {
+        site_id, site_code, site_name,
+        devices: [{device_id, device_code, device_type, loss_comm_active,
+                   loss_comm_start, power_fail_active}],
+        comm_status: 'full_down' | 'partial_down',
+        affected_device_types: [...],   # chỉ có khi partial_down
+        power_affected: bool,           # True nếu BẤT KỲ device nào có power_fail active
+        earliest_loss_comm_start: datetime | None,
+    }
+    Ném ValueError nếu station không tồn tại hoặc không có device nào loss_comm active.
+    """
+    with get_cursor(dict_cursor=True, commit=False) as cur:
+        cur.execute(
+            """
+            SELECT s.site_id, s.site_code, s.site_name,
+                   d.device_id, d.device_code, d.type AS device_type,
+                   ae_comm.start_time AS loss_comm_start,
+                   ae_power.alarm_id AS power_fail_alarm_id
+            FROM station s
+            JOIN device d ON d.site_id = s.site_id
+            LEFT JOIN alarm_event ae_comm
+                ON ae_comm.device_id = d.device_id
+               AND ae_comm.alarm_name = 'loss_comm' AND ae_comm.status = 'active'
+            LEFT JOIN alarm_event ae_power
+                ON ae_power.device_id = d.device_id
+               AND ae_power.alarm_name = 'power_fail' AND ae_power.status = 'active'
+            WHERE s.site_id = %(site_id)s
+            """,
+            {"site_id": site_id},
+        )
+        rows = cur.fetchall()
+
+    if not rows:
+        raise ValueError(f"Không tìm thấy station site_id={site_id} hoặc station chưa có device")
+
+    devices = []
+    loss_comm_starts = []
+    power_affected = False
+    for r in rows:
+        loss_comm_active = r["loss_comm_start"] is not None
+        power_fail_active = r["power_fail_alarm_id"] is not None
+        devices.append(
+            {
+                "device_id": r["device_id"],
+                "device_code": r["device_code"],
+                "device_type": r["device_type"],
+                "loss_comm_active": loss_comm_active,
+                "loss_comm_start": r["loss_comm_start"],
+                "power_fail_active": power_fail_active,
+            }
+        )
+        if loss_comm_active:
+            loss_comm_starts.append(r["loss_comm_start"])
+        if power_fail_active:
+            power_affected = True
+
+    total = len(devices)
+    down_count = len(loss_comm_starts)
+    if down_count == 0:
+        raise ValueError(f"Station site_id={site_id} không có device nào loss_comm active -> không cần RCA")
+
+    comm_status = FULL_DOWN if down_count == total else PARTIAL_DOWN
+    affected_device_types = (
+        sorted({d["device_type"] for d in devices if d["loss_comm_active"]}) if comm_status == PARTIAL_DOWN else []
+    )
+
+    return {
+        "site_id": rows[0]["site_id"],
+        "site_code": rows[0]["site_code"],
+        "site_name": rows[0]["site_name"],
+        "devices": devices,
+        "comm_status": comm_status,
+        "affected_device_types": affected_device_types,
+        "power_affected": power_affected,
+        "earliest_loss_comm_start": min(loss_comm_starts),
+    }

@@ -1,30 +1,36 @@
 """
 Kết nối escalation + RCA + alerting thành 1 pipeline chạy mỗi chu kỳ poll.
 
-Xử lý 2 nhánh song song, theo đúng quy tắc thống nhất:
-  - Station mất liên lạc TOÀN BỘ (mọi device đều loss_comm) -> đi qua escalation
-    (gộp lên node cấp cao nhất đang down toàn bộ) + RCA.
-  - Station chỉ mất liên lạc 1 PHẦN device -> cảnh báo riêng theo từng device
-    (device.type + station.site_name), không tính là station down, không vào cây
-    escalation.
+2 nhánh, đều chạy RCA theo STATION/NODE (không theo alarm/device):
+  - full_down: các station full-down được escalation gộp lên 1 node cha lớn nhất
+    (EscalationGroup). RCA chạy ĐÚNG 1 LẦN cho cả node đó (rca.engine.analyze_group)
+    — không phân tích/gửi kết quả riêng cho từng station con bên trong.
+  - partial_down: station báo riêng, không vào cây escalation -> RCA theo từng
+    station (rca.engine.analyze_station), bỏ qua bước 1.
 
-Giữ trạng thái lần chạy trước (in-memory) để chỉ gửi cảnh báo khi có thay đổi
-(group/device MỚI xuất hiện hoặc đã biến mất) — tránh spam lại mỗi chu kỳ poll.
+Giữ trạng thái lần chạy trước (in-memory, theo node_id cho full-down và site_id
+cho partial-down) để chỉ gửi cảnh báo khi có thay đổi thật sự.
 
-Lưu ý: trạng thái này mất khi restart tiến trình -> nếu restart giữa lúc đang có
-sự cố, cảnh báo DOWN có thể gửi lại 1 lần (chấp nhận được, còn hơn im lặng bỏ sót).
+Xử lý escalate-lên-cao-hơn (node A ⊂ node B): khi node A đang được cảnh báo mà sau
+đó toàn bộ (hoặc thêm) nhánh dưới node B cũng down, escalation sẽ gộp lại thành 1
+group mới ở node B -> node A biến mất khỏi current_map dù các station của A VẪN
+đang down (chỉ là được báo cáo ở cấp cao hơn). Trường hợp này KHÔNG được coi là
+"đã khôi phục" A — chỉ gửi "đã khôi phục" khi station của group cũ thực sự không
+còn nằm trong bất kỳ group full-down nào ở chu kỳ hiện tại.
+
+Lưu ý: trạng thái mất khi restart tiến trình -> nếu restart giữa lúc đang có sự
+cố, cảnh báo DOWN có thể gửi lại 1 lần (chấp nhận được, còn hơn im lặng bỏ sót).
 """
 import logging
 
-from db.connection import get_cursor
 from escalation.engine import compute_escalation
-from escalation.station_status import get_partial_loss_comm_devices
-from rca.engine import run_rca
+from escalation.station_status import get_partial_down_stations
+from rca.engine import analyze_group, analyze_station
 from alerting.messages import (
     format_down_alert,
     format_recovered_alert,
-    format_partial_device_alert,
-    format_partial_device_recovered,
+    format_partial_station_alert,
+    format_partial_station_recovered,
 )
 from alerting.notifier import send_alert
 
@@ -33,69 +39,72 @@ logger = logging.getLogger(__name__)
 
 class AlarmPipeline:
     def __init__(self):
-        self._last_groups = {}   # node_id -> EscalationGroup (station full-down, lần chạy trước)
-        self._last_partial = {}  # alarm_id -> device dict (station partial-down, lần chạy trước)
+        self._last_groups = {}   # node_id -> EscalationGroup (full-down, lần chạy trước)
+        self._last_partial = {}  # site_id -> {site_code, site_name} (partial-down, lần chạy trước)
 
     def run_cycle(self):
         current_groups = compute_escalation()
         current_map = {g.node_id: g for g in current_groups}
+        current_partial = get_partial_down_stations()
 
-        current_partial_list = get_partial_loss_comm_devices()
-        current_partial_map = {d["alarm_id"]: d for d in current_partial_list}
+        # union toàn bộ station đang full-down ở chu kỳ này (bất kể thuộc group nào)
+        # -> dùng để phân biệt "thật sự khôi phục" với "chỉ escalate lên node cha cao hơn"
+        currently_down_station_ids = set()
+        for g in current_map.values():
+            currently_down_station_ids |= g.station_site_ids
 
         new_ids = set(current_map) - set(self._last_groups)
         resolved_ids = set(self._last_groups) - set(current_map)
 
         for node_id in new_ids:
             group = current_map[node_id]
-            rca_results = []
-            for alarm_id in group.alarm_ids:
-                try:
-                    rca_results.append(run_rca(alarm_id))
-                except ValueError:
-                    logger.exception("RCA lỗi cho alarm_id=%s, bỏ qua evidence này", alarm_id)
-            text = format_down_alert(group, rca_results)
+            try:
+                rca_result = analyze_group(group)
+            except ValueError:
+                logger.exception("RCA lỗi cho node=%s, gửi cảnh báo không kèm RCA", group.node_code)
+                continue
+            text = format_down_alert(group, rca_result)
             logger.info("Gửi cảnh báo DOWN: node=%s (%s)", group.node_code, group.node_type)
             send_alert(text)
 
         for node_id in resolved_ids:
-            group = self._last_groups[node_id]
-            text = format_recovered_alert(group)
-            logger.info("Gửi cảnh báo RECOVERED: node=%s", group.node_code)
+            old_group = self._last_groups[node_id]
+            if old_group.station_site_ids & currently_down_station_ids:
+                # station của node này vẫn đang down, chỉ là đã escalate lên node
+                # cha cao hơn (đã/sẽ được báo ở group mới) -> KHÔNG gửi "khôi phục"
+                logger.info("Node=%s biến mất khỏi group nhưng station vẫn down -> bỏ qua (đã escalate lên cao hơn)", old_group.node_code)
+                continue
+            text = format_recovered_alert(old_group)
+            logger.info("Gửi cảnh báo RECOVERED: node=%s", old_group.node_code)
             send_alert(text)
 
-        # --- device-level partial (station chưa down toàn bộ) ---
-        new_partial_ids = set(current_partial_map) - set(self._last_partial)
-        resolved_partial_ids = set(self._last_partial) - set(current_partial_map)
+        # --- partial-down (theo station, không vào cây escalation) ---
+        new_partial_ids = set(current_partial) - set(self._last_partial)
+        resolved_partial_ids = set(self._last_partial) - set(current_partial)
 
-        # alarm_id đã "chuyển cấp" thành 1 phần của station full-down -> không coi
-        # là recovered riêng lẻ, đã có cảnh báo DOWN ở mức station rồi.
-        escalated_alarm_ids = set()
-        for g in current_map.values():
-            escalated_alarm_ids |= g.alarm_ids
-
-        for alarm_id in new_partial_ids:
-            device = current_partial_map[alarm_id]
-            text = format_partial_device_alert(device)
-            logger.info("Gửi cảnh báo DOWN (device): %s tại %s", device["device_code"], device["site_code"])
+        for site_id in new_partial_ids:
+            try:
+                rca_result = analyze_station(site_id)
+            except ValueError:
+                logger.exception("RCA lỗi cho site_id=%s (partial-down), bỏ qua chu kỳ này", site_id)
+                continue
+            text = format_partial_station_alert(rca_result)
+            logger.info("Gửi cảnh báo DOWN (partial): station=%s", rca_result.site_code)
             send_alert(text)
 
-        for alarm_id in resolved_partial_ids:
-            if alarm_id in escalated_alarm_ids:
-                # device này giờ nằm trong 1 station đã down toàn bộ -> đã báo ở
-                # nhánh escalation, không gửi "đã khôi phục" gây hiểu nhầm.
+        for site_id in resolved_partial_ids:
+            if site_id in currently_down_station_ids:
+                # station đã "chuyển cấp" thành full-down (đang nằm trong 1 group) ->
+                # đã báo ở nhánh escalation phía trên, không gửi "đã khôi phục" partial
+                # gây hiểu nhầm.
                 continue
-            device = self._last_partial[alarm_id]
-            if _alarm_still_active(alarm_id):
-                # vẫn active nhưng không còn "partial" theo snapshot mới (hiếm khi
-                # xảy ra do race condition đọc DB) -> bỏ qua, chờ chu kỳ sau ổn định
-                continue
-            text = format_partial_device_recovered(device)
-            logger.info("Gửi cảnh báo RECOVERED (device): %s tại %s", device["device_code"], device["site_code"])
+            station = self._last_partial[site_id]
+            text = format_partial_station_recovered(station)
+            logger.info("Gửi cảnh báo RECOVERED (partial): station=%s", station["site_code"])
             send_alert(text)
 
         self._last_groups = current_map
-        self._last_partial = current_partial_map
+        self._last_partial = current_partial
 
         return {
             "new_alerts": len(new_ids),
@@ -103,11 +112,5 @@ class AlarmPipeline:
             "active_groups": len(current_map),
             "new_partial_alerts": len(new_partial_ids),
             "resolved_partial_alerts": len(resolved_partial_ids),
-            "active_partial_devices": len(current_partial_map),
+            "active_partial_stations": len(current_partial),
         }
-
-
-def _alarm_still_active(alarm_id: int) -> bool:
-    with get_cursor(dict_cursor=False, commit=False) as cur:
-        cur.execute("SELECT 1 FROM alarm_event WHERE alarm_id = %(alarm_id)s AND status = 'active'", {"alarm_id": alarm_id})
-        return cur.fetchone() is not None

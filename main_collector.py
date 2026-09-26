@@ -8,6 +8,8 @@ import logging
 import signal
 import sys
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from config.settings import LOG_LEVEL, POLL_INTERVAL_NORMAL_SEC, POLL_INTERVAL_ACTIVE_SEC
 from collectors.factory import build_collector
@@ -15,10 +17,19 @@ from collectors.alarm_sync import sync_alarms, has_active_alarms
 from alarm_pipeline import AlarmPipeline
 from db.connection import close_connection
 
+
+# Định nghĩa hàm lấy thời gian thực tế theo múi giờ Việt Nam
+def vietnam_time_converter(*args):
+    return datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).timetuple()
+
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+# Ép toàn bộ hệ thống logging sử dụng múi giờ Việt Nam thay vì UTC của hệ điều hành
+logging.Formatter.converter = vietnam_time_converter
+
 logger = logging.getLogger("main_collector")
 
 _running = True
