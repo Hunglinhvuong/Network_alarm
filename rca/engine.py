@@ -38,10 +38,10 @@ CONCLUSION_AREA_POWER = "area_power_outage"
 CONCLUSION_ISOLATED = "isolated"
 
 CONCLUSION_LABEL_VI = {
-    CONCLUSION_SYNC_PARENT: "Nghi ngờ sự cố tuyến truyền dẫn / node cha (nhiều trạm cùng nhánh mất liên lạc đồng bộ)",
+    CONCLUSION_SYNC_PARENT: "Nghi ngờ sự cố tuyến/thiết bị truyền dẫn (các trạm cùng node mất liên lạc đồng thời)",
     CONCLUSION_POWER_FAIL: "Nghi ngờ do mất điện tại trạm",
-    CONCLUSION_AREA_POWER: "Nghi ngờ sự cố điện diện rộng (trạm lân cận cũng mất điện)",
-    CONCLUSION_ISOLATED: "Chưa xác định được nguyên nhân liên quan -> có thể lỗi cục bộ",
+    CONCLUSION_AREA_POWER: "Nghi ngờ sự cố điện (trạm lân cận cũng mất điện)",
+    CONCLUSION_ISOLATED: "Chưa xác định nguyên nhân, kiểm tra thiết bị hoặc truyền dẫn",
 }
 
 
@@ -74,7 +74,7 @@ class StationRCAResult:
         if s["power_affected"]:
             lines.append("⚡ Ghi nhận mất điện tại trạm (tính cả station bị ảnh hưởng)")
 
-        lines.append(f"Kết luận RCA: {self.conclusion_label}")
+        lines.append(f"RCA: {self.conclusion_label}")
 
         if self.step1_evidence:
             ev = self.step1_evidence
@@ -251,6 +251,60 @@ def _step2_power_fail_multi(site_ids: list, loss_comm_start) -> dict:
     }
 
 
+def _get_group_outage_timing(site_ids: list) -> dict:
+    """Tóm tắt trạm cũ/mới và device bắt đầu mất liên lạc gần nhất trong group."""
+    with get_cursor(dict_cursor=True, commit=False) as cur:
+        cur.execute(
+            """
+            SELECT s.site_id, s.site_name, d.type AS device_type, ae.start_time
+            FROM alarm_event ae
+            JOIN device d ON d.device_id = ae.device_id
+            JOIN station s ON s.site_id = d.site_id
+            WHERE d.site_id = ANY(%(site_ids)s)
+              AND ae.alarm_name = 'loss_comm'
+              AND ae.status = 'active'
+            ORDER BY ae.start_time, s.site_name, d.type
+            """,
+            {"site_ids": site_ids},
+        )
+        rows = cur.fetchall()
+
+    if not rows:
+        return None
+
+    latest_start = max(row["start_time"] for row in rows)
+    window_start = latest_start - timedelta(minutes=NODE_SYNC_WINDOW_MINUTES)
+    station_first_alarm = {}
+    for row in rows:
+        station_first_alarm[row["site_id"]] = min(
+            station_first_alarm.get(row["site_id"], row["start_time"]),
+            row["start_time"],
+        )
+
+    old_station_ids = {
+        site_id for site_id, start_time in station_first_alarm.items() if start_time < window_start
+    }
+    new_devices_by_station = {}
+    for row in rows:
+        if row["start_time"] < window_start:
+            continue
+        device = new_devices_by_station.setdefault(
+            row["site_id"], {"site_name": row["site_name"], "device_types": set()}
+        )
+        device["device_types"].add(row["device_type"])
+
+    new_devices = [
+        {"site_name": device["site_name"], "device_types": sorted(device["device_types"])}
+        for device in new_devices_by_station.values()
+    ]
+    return {
+        "old_station_count": len(old_station_ids),
+        "new_station_count": len(station_first_alarm) - len(old_station_ids),
+        "detected_at": latest_start,
+        "new_devices": new_devices,
+    }
+
+
 
 def _step3_neighbor_power(station: dict) -> dict:
     """Trạm lân cận (neighbor_edge, ≤ NEIGHBOR_DISTANCE_KM) có power_fail active không."""
@@ -304,6 +358,7 @@ class NodeRCAResult:
     node_type: str
     station_codes: list
     power_affected_codes: list = field(default_factory=list)
+    outage_timing_evidence: dict = None
     conclusion: str = CONCLUSION_ISOLATED
     step1_evidence: dict = None
     step2_evidence: dict = None
@@ -314,13 +369,29 @@ class NodeRCAResult:
         return CONCLUSION_LABEL_VI.get(self.conclusion, self.conclusion)
 
     def to_text(self) -> str:
-        lines = [f"Kết luận RCA: {self.conclusion_label}"]
+        lines = [f"RCA: {self.conclusion_label}"]
 
         if self.step1_evidence:
             ev = self.step1_evidence
             lines.append(
-                f"- Đồng bộ mất liên lạc trong cửa sổ ±{NODE_SYNC_WINDOW_MINUTES} phút:"
-                f" {ev['count']} trạm cùng mất liên lạc ({ev['earliest']} → {ev['latest']})"
+                f"- Toàn bộ thiết bị tại {ev['count']} trạm mất liên lạc đồng bộ "
+                f"trong cửa sổ ±{NODE_SYNC_WINDOW_MINUTES} phút "
+                f"({ev['earliest']} → {ev['latest']})"
+            )
+        if self.outage_timing_evidence:
+            ev = self.outage_timing_evidence
+            lines.append(
+                f"- Các trạm trong node {self.node_name} không mất liên lạc đồng thời; "
+                f"có {ev['old_station_count']} trạm mất liên lạc từ trước, "
+                f"có {ev['new_station_count']} trạm mới phát hiện mất liên lạc vào "
+                f"{ev['detected_at'].strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            lines.append(
+                "- Thiết bị mới phát hiện mất liên lạc: "
+                + ", ".join(
+                    f"{d['site_name']} ({','.join(d['device_types'])})"
+                    for d in ev["new_devices"]
+                )
             )
         if self.step2_evidence:
             ev = self.step2_evidence
@@ -344,9 +415,9 @@ def analyze_group(group) -> NodeRCAResult:
     Chạy RCAP MỘT LẦN cho toàn bộ node cha (group) mà escalation.compute_escalation()
     đã gộp lên — KHÔNG chạy lại RCA riêng cho từng station con bên trong.
 
-    - group có >1 station: bước 1 = kiểm tra toàn bộ station trong group có mất
-      liên lạc đồng bộ trong cửa sổ ±NODE_SYNC_WINDOW_MINUTES không (so sánh
-      earliest_loss_comm_start sớm nhất và trễ nhất trong group).
+        - group có >1 station: bước 1 chỉ kết luận sự cố node cha khi tất cả station
+            đều full-down và thời điểm loss_comm của toàn bộ device trong group nằm
+            trong cùng cửa sổ NODE_SYNC_WINDOW_MINUTES.
     - group chỉ có 1 station (node_type=STATION, không có sibling nào down cùng):
       bước 1 tự động bỏ qua (không có gì để so sánh đồng bộ), chạy thẳng bước 2.
     - Không đạt bước 1 -> bước 2 (power_fail bất kỳ device nào trong TOÀN BỘ group)
@@ -365,17 +436,46 @@ def analyze_group(group) -> NodeRCAResult:
         power_affected_codes=power_affected_codes,
     )
 
-    if len(stations) > 1:
-        starts = [s["earliest_loss_comm_start"] for s in stations]
-        earliest, latest = min(starts), max(starts)
-        if (latest - earliest) <= timedelta(minutes=NODE_SYNC_WINDOW_MINUTES):
+    starts = [s["earliest_loss_comm_start"] for s in stations]
+    latest_start = max(starts)
+    window_start = latest_start - timedelta(minutes=NODE_SYNC_WINDOW_MINUTES)
+    latest_wave_stations = [s for s in stations if s["earliest_loss_comm_start"] >= window_start]
+    is_staged_outage = len(latest_wave_stations) < len(stations)
+
+    if is_staged_outage:
+        result.outage_timing_evidence = _get_group_outage_timing(list(group.station_site_ids))
+
+    all_stations_full_down = all(s["comm_status"] == FULL_DOWN for s in stations)
+    device_loss_starts = [
+        device["loss_comm_start"]
+        for station in stations
+        for device in station["devices"]
+        if device["loss_comm_active"]
+    ]
+    total_device_count = sum(len(station["devices"]) for station in stations)
+
+    if len(stations) > 1 and all_stations_full_down and len(device_loss_starts) == total_device_count:
+        earliest_device_loss = min(device_loss_starts)
+        latest_device_loss = max(device_loss_starts)
+        if latest_device_loss - earliest_device_loss <= timedelta(minutes=NODE_SYNC_WINDOW_MINUTES):
             result.conclusion = CONCLUSION_SYNC_PARENT
-            result.step1_evidence = {"count": len(stations), "earliest": earliest, "latest": latest}
-            logger.info("RCA node=%s -> %s (bước 1, %d trạm)", group.node_code, result.conclusion, len(stations))
+            result.step1_evidence = {
+                "count": len(stations),
+                "earliest": earliest_device_loss,
+                "latest": latest_device_loss,
+            }
+            logger.info(
+                "RCA node=%s -> %s (bước 1, toàn bộ %d device tại %d trạm)",
+                group.node_code,
+                result.conclusion,
+                len(device_loss_starts),
+                len(stations),
+            )
             return result
 
-    site_ids = [s["site_id"] for s in stations]
-    earliest_overall = min(s["earliest_loss_comm_start"] for s in stations)
+    power_correlation_stations = latest_wave_stations if is_staged_outage else stations
+    site_ids = [s["site_id"] for s in power_correlation_stations]
+    earliest_overall = min(s["earliest_loss_comm_start"] for s in power_correlation_stations)
 
     step2 = _step2_power_fail_multi(site_ids, earliest_overall)
     if step2:

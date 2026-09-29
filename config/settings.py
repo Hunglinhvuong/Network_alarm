@@ -49,6 +49,8 @@ ORACLE_COLLECTOR_CONFIG = {
 # ---------- Polling ----------
 POLL_INTERVAL_NORMAL_SEC = int(os.environ.get("POLL_INTERVAL_NORMAL_SEC", 300))   # 5 phút, khi hệ thống yên
 POLL_INTERVAL_ACTIVE_SEC = int(os.environ.get("POLL_INTERVAL_ACTIVE_SEC", 60))    # 1 phút, khi đang có alarm active
+PERIODIC_REPORT_INTERVAL_MINUTES = int(os.environ.get("PERIODIC_REPORT_INTERVAL_MINUTES", 5))
+PERIODIC_REPORT_START_TIME = os.environ.get("PERIODIC_REPORT_START_TIME", "08:00")
 
 # ---------- RCA / nghiệp vụ (tham số hoá, chưa có bảng config trong DB) ----------
 NODE_SYNC_WINDOW_MINUTES = int(os.environ.get("NODE_SYNC_WINDOW_MINUTES", 10))      # bước 1: đồng bộ cùng node cha
@@ -70,6 +72,28 @@ def _parse_id_list(raw: str) -> list:
 
 # Chat/group nhận cảnh báo tự động (push alert) — có thể nhiều chat cùng lúc
 TELEGRAM_ALERT_CHAT_IDS = _parse_id_list(os.environ.get("TELEGRAM_ALERT_CHAT_IDS", ""))
+TELEGRAM_OUTBOX_POLL_INTERVAL_SEC = float(os.environ.get("TELEGRAM_OUTBOX_POLL_INTERVAL_SEC", 1))
+TELEGRAM_SEND_INTERVAL_SEC = float(os.environ.get("TELEGRAM_SEND_INTERVAL_SEC", 1))
+TELEGRAM_GROUP_SEND_INTERVAL_SEC = float(os.environ.get("TELEGRAM_GROUP_SEND_INTERVAL_SEC", 3))
+TELEGRAM_GLOBAL_SEND_INTERVAL_SEC = float(os.environ.get("TELEGRAM_GLOBAL_SEND_INTERVAL_SEC", 0.05))
+if min(
+    TELEGRAM_OUTBOX_POLL_INTERVAL_SEC,
+    TELEGRAM_SEND_INTERVAL_SEC,
+    TELEGRAM_GROUP_SEND_INTERVAL_SEC,
+    TELEGRAM_GLOBAL_SEND_INTERVAL_SEC,
+) <= 0:
+    raise ValueError("Các cấu hình tốc độ gửi Telegram phải lớn hơn 0")
+TELEGRAM_OUTBOX_SENT_RETENTION_DAYS = int(os.environ.get("TELEGRAM_OUTBOX_SENT_RETENTION_DAYS", 30))
+TELEGRAM_OUTBOX_FAILED_RETENTION_DAYS = int(os.environ.get("TELEGRAM_OUTBOX_FAILED_RETENTION_DAYS", 90))
+ALARM_EVENT_RETENTION_DAYS = int(os.environ.get("ALARM_EVENT_RETENTION_DAYS", 180))
+DATA_CLEANUP_BATCH_SIZE = int(os.environ.get("DATA_CLEANUP_BATCH_SIZE", 5000))
+if min(
+    TELEGRAM_OUTBOX_SENT_RETENTION_DAYS,
+    TELEGRAM_OUTBOX_FAILED_RETENTION_DAYS,
+    ALARM_EVENT_RETENTION_DAYS,
+    DATA_CLEANUP_BATCH_SIZE,
+) <= 0:
+    raise ValueError("Retention days và DATA_CLEANUP_BATCH_SIZE phải lớn hơn 0")
 # User được phép dùng các lệnh tra cứu/quản trị trên bot (whitelist theo Telegram user_id)
 TELEGRAM_ADMIN_IDS = _parse_id_list(os.environ.get("TELEGRAM_ADMIN_IDS", ""))
 # Khoảng nghỉ (giây) giữa các lần poll getUpdates của bot tra cứu

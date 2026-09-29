@@ -28,6 +28,8 @@ from escalation.station_status import get_partial_down_stations
 from rca.engine import analyze_group, analyze_station
 from alerting.messages import (
     format_down_alert,
+    format_down_alert_single,
+    format_down_alert_node,
     format_recovered_alert,
     format_partial_station_alert,
     format_partial_station_recovered,
@@ -63,7 +65,10 @@ class AlarmPipeline:
             except ValueError:
                 logger.exception("RCA lỗi cho node=%s, gửi cảnh báo không kèm RCA", group.node_code)
                 continue
-            text = format_down_alert(group, rca_result)
+            if group.node_type == "STATION" and len(group.station_site_ids) == 1:
+                text = format_down_alert_single(group, rca_result)
+            else:
+                text = format_down_alert_node(group, rca_result)
             logger.info("Gửi cảnh báo DOWN: node=%s (%s)", group.node_code, group.node_type)
             send_alert(text)
 

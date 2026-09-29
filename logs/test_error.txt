@@ -1,0 +1,68 @@
+(venv) hungnguyenhuu@MLMB-DVTNA-Hung:/mnt/d/Recent_Work/ToolCV/Network-Alarm$ python3 main_collector.py
+2026-09-26 22:53:55,274 [INFO] main_collector: Alarm Collector khởi động, nguồn: CSVAlarmCollector (múi giờ: Asia/Ho_Chi_Minh)
+2026-09-26 22:53:55,293 [INFO] db.connection: Đang mở kết nối PostgreSQL tới localhost:5432/network_alarm
+2026-09-26 22:53:55,473 [INFO] db.connection: Đã cấu hình DB session timezone thành: Asia/Ho_Chi_Minh
+2026-09-26 22:53:55,488 [INFO] db.device_repo: Đã nạp cache device: 1405 thiết bị
+2026-09-26 22:53:55,491 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=238 alarm=loss_comm start=2026-09-26 21:40:00
+2026-09-26 22:53:55,493 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=567 alarm=loss_comm start=2026-09-26 22:05:00
+2026-09-26 22:53:55,494 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=234 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,495 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=235 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,496 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=236 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,498 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=237 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,499 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=279 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,500 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=562 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,501 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=565 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,503 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=566 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,504 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=568 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,505 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=949 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,506 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=950 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,507 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=951 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,508 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=952 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,510 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=986 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,511 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=1224 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,512 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=1227 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,513 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=1228 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,514 [INFO] collectors.alarm_sync: Alarm MỚI: device_id=1229 alarm=loss_comm start=2026-09-26 22:02:00
+2026-09-26 22:53:55,528 [INFO] collectors.alarm_sync: Sync xong: {'new': 20, 'cleared': 0, 'unknown_device': 0, 'still_active': 0}
+2026-09-26 22:53:55,587 [INFO] escalation.engine: Escalation: 11 station down -> gộp thành 1 nhóm cảnh báo
+2026-09-26 22:53:55,610 [ERROR] db.connection: Lỗi khi thao tác DB, đã rollback
+Traceback (most recent call last):
+  File "/mnt/d/Recent_Work/ToolCV/Network-Alarm/db/connection.py", line 62, in get_cursor
+    yield cur
+  File "/mnt/d/Recent_Work/ToolCV/Network-Alarm/rca/engine.py", line 257, in _get_group_outage_timing
+    cur.execute(
+    ~~~~~~~~~~~^
+        """
+        ^^^
+    ...<9 lines>...
+        {"site_ids": site_ids},
+        ^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/d/Recent_Work/ToolCV/Network-Alarm/venv/lib/python3.14/site-packages/psycopg2/extras.py", line 236, in execute
+    return super().execute(query, vars)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+psycopg2.ProgrammingError: can't adapt type 'set'
+2026-09-26 22:53:55,648 [ERROR] main_collector: Lỗi trong chu kỳ poll -> bỏ qua chu kỳ này, thử lại lần sau
+Traceback (most recent call last):
+  File "/mnt/d/Recent_Work/ToolCV/Network-Alarm/main_collector.py", line 60, in run_loop
+    result = pipeline.run_cycle()
+  File "/mnt/d/Recent_Work/ToolCV/Network-Alarm/alarm_pipeline.py", line 62, in run_cycle
+    rca_result = analyze_group(group)
+  File "/mnt/d/Recent_Work/ToolCV/Network-Alarm/rca/engine.py", line 438, in analyze_group
+    result.outage_timing_evidence = _get_group_outage_timing(group.station_site_ids)
+                                    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/d/Recent_Work/ToolCV/Network-Alarm/rca/engine.py", line 257, in _get_group_outage_timing
+    cur.execute(
+    ~~~~~~~~~~~^
+        """
+        ^^^
+    ...<9 lines>...
+        {"site_ids": site_ids},
+        ^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/d/Recent_Work/ToolCV/Network-Alarm/venv/lib/python3.14/site-packages/psycopg2/extras.py", line 236, in execute
+    return super().execute(query, vars)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+psycopg2.ProgrammingError: can't adapt type 'set'

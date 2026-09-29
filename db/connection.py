@@ -17,43 +17,43 @@ logger = logging.getLogger(__name__)
 _connection = None
 
 
+def create_connection():
+    """Mở kết nối PostgreSQL độc lập; dùng cho worker chạy trên thread riêng."""
+    connection = psycopg2.connect(
+        host=DB_CONFIG["host"],
+        port=DB_CONFIG["port"],
+        dbname=DB_CONFIG["dbname"],
+        user=DB_CONFIG["user"],
+        password=DB_CONFIG["password"],
+        connect_timeout=DB_CONFIG["connect_timeout"],
+    )
+    connection.autocommit = False
+    try:
+        with connection.cursor() as cur:
+            cur.execute("SET TIME ZONE %s", (APP_TIMEZONE,))
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        connection.close()
+        raise
+    return connection
+
+
 def get_connection():
-    """Trả về 1 connection dùng chung (singleton nhẹ), tự reconnect nếu đã đóng/lỗi.
-    
-    Sau khi kết nối thành công, ép DB session timezone thành APP_TIMEZONE để tất cả
-    TIMESTAMPTZ được xử lý theo múi giờ cục bộ.
-    """
+    """Trả về 1 connection dùng chung (singleton nhẹ), tự reconnect nếu đã đóng/lỗi."""
     global _connection
     if _connection is None or _connection.closed:
         logger.info("Đang mở kết nối PostgreSQL tới %s:%s/%s", DB_CONFIG["host"], DB_CONFIG["port"], DB_CONFIG["dbname"])
-        _connection = psycopg2.connect(
-            host=DB_CONFIG["host"],
-            port=DB_CONFIG["port"],
-            dbname=DB_CONFIG["dbname"],
-            user=DB_CONFIG["user"],
-            password=DB_CONFIG["password"],
-            connect_timeout=DB_CONFIG["connect_timeout"],
-        )
-        _connection.autocommit = False
-        
-        # Ép session timezone của DB thành APP_TIMEZONE
-        # Điều này đảm bảo tất cả TIMESTAMPTZ được chuyển đổi khi query
-        try:
-            with _connection.cursor() as cur:
-                cur.execute(f"SET TIME ZONE '{APP_TIMEZONE}'")
-            _connection.commit()
-            logger.info("Đã cấu hình DB session timezone thành: %s", APP_TIMEZONE)
-        except Exception:
-            logger.exception("Lỗi khi cấu hình DB timezone, tiếp tục...")
-    
+        _connection = create_connection()
+        logger.info("Đã cấu hình DB session timezone thành: %s", APP_TIMEZONE)
     return _connection
 
 
 @contextmanager
 def get_cursor(dict_cursor=True, commit=True):
     """
-    Context manager: mở cursor, commit khi thành công, rollback khi lỗi.
     dict_cursor=True -> trả về row dạng dict (RealDictCursor) thay vì tuple.
+    commit=True -> tự commit khi thành công; rollback nếu có exception.
     """
     conn = get_connection()
     cursor_factory = psycopg2.extras.RealDictCursor if dict_cursor else None

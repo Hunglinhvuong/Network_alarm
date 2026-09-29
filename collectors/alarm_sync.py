@@ -51,6 +51,7 @@ def sync_alarms(records) -> dict:
                 """
                 INSERT INTO alarm_event (device_id, alarm_name, start_time, end_time, status)
                 VALUES (%s, %s, %s, NULL, 'active')
+                ON CONFLICT (device_id, alarm_name, start_time) DO NOTHING;
                 """,
                 (device_id, rec.alarm_name, start_time),
             )

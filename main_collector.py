@@ -10,14 +10,23 @@ import logging
 import signal
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from config.settings import LOG_LEVEL, POLL_INTERVAL_NORMAL_SEC, POLL_INTERVAL_ACTIVE_SEC, APP_TIMEZONE
+from config.settings import (
+    LOG_LEVEL,
+    POLL_INTERVAL_NORMAL_SEC,
+    POLL_INTERVAL_ACTIVE_SEC,
+    PERIODIC_REPORT_INTERVAL_MINUTES,
+    PERIODIC_REPORT_START_TIME,
+    APP_TIMEZONE,
+)
 from collectors.factory import build_collector
 from collectors.alarm_sync import sync_alarms, has_active_alarms
 from alarm_pipeline import AlarmPipeline
 from db.connection import close_connection
+from alerting.periodic_report import build_periodic_report, next_report_time
+from alerting.notifier import send_alert, start_outbox_worker, stop_outbox_worker
 
 
 # Định nghĩa hàm lấy thời gian thực tế theo múi giờ ứng dụng (APP_TIMEZONE)
@@ -50,6 +59,12 @@ def run_loop():
 
     collector = build_collector()
     pipeline = AlarmPipeline()
+    next_report_at = next_report_time(
+        datetime.now(ZoneInfo(APP_TIMEZONE)),
+        PERIODIC_REPORT_START_TIME,
+        PERIODIC_REPORT_INTERVAL_MINUTES,
+    )
+    start_outbox_worker()
     logger.info("Alarm Collector khởi động, nguồn: %s (múi giờ: %s)", collector.__class__.__name__, APP_TIMEZONE)
 
     while _running:
@@ -60,6 +75,12 @@ def run_loop():
             result = pipeline.run_cycle()
             if result["new_alerts"] or result["resolved_alerts"] or result["new_partial_alerts"] or result["resolved_partial_alerts"]:
                 logger.info("Pipeline: %s", result)
+            report_check_time = datetime.now(ZoneInfo(APP_TIMEZONE))
+            if report_check_time >= next_report_at:
+                logger.info("Gửi báo cáo tổng hợp định kỳ")
+                send_alert(build_periodic_report())
+                while next_report_at <= report_check_time:
+                    next_report_at += timedelta(minutes=PERIODIC_REPORT_INTERVAL_MINUTES)
         except Exception:
             logger.exception("Lỗi trong chu kỳ poll -> bỏ qua chu kỳ này, thử lại lần sau")
 
@@ -71,6 +92,8 @@ def run_loop():
 
         elapsed = time.time() - cycle_start
         sleep_time = max(0.0, interval - elapsed)
+        until_report = (next_report_at - datetime.now(ZoneInfo(APP_TIMEZONE))).total_seconds()
+        sleep_time = min(sleep_time, max(0.0, until_report))
         logger.debug("Chu kỳ mất %.2fs, ngủ %.2fs (interval=%ds)", elapsed, sleep_time, interval)
 
         # ngủ theo từng đoạn nhỏ để phản ứng nhanh với tín hiệu dừng
@@ -80,6 +103,7 @@ def run_loop():
             time.sleep(step)
             slept += step
 
+    stop_outbox_worker()
     close_connection()
     logger.info("Alarm Collector đã dừng.")
 

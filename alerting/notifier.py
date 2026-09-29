@@ -8,19 +8,15 @@ polling/dispatcher nặng của thư viện bot, chạy nhẹ hơn trên Wyse 50
 """
 import logging
 
-import requests
-
-from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_ALERT_CHAT_IDS
+from config.settings import TELEGRAM_ALERT_CHAT_IDS, TELEGRAM_BOT_TOKEN
+from alerting.outbox import enqueue_messages, start_outbox_worker, stop_outbox_worker
 
 logger = logging.getLogger(__name__)
-
-_API_BASE = "https://api.telegram.org/bot{token}/sendMessage"
 
 
 def send_alert(text: str, chat_ids=None) -> None:
     """
-    Gửi `text` tới danh sách chat_ids (mặc định = TELEGRAM_ALERT_CHAT_IDS trong config).
-    Lỗi gửi tới 1 chat không làm dừng việc gửi tới các chat còn lại.
+    Xếp `text` vào PostgreSQL outbox để worker gửi tuần tự và retry khi lỗi.
     """
     if not TELEGRAM_BOT_TOKEN:
         logger.warning("TELEGRAM_BOT_TOKEN chưa cấu hình -> bỏ qua gửi cảnh báo: %s", text[:80])
@@ -31,15 +27,8 @@ def send_alert(text: str, chat_ids=None) -> None:
         logger.warning("TELEGRAM_ALERT_CHAT_IDS chưa cấu hình -> bỏ qua gửi cảnh báo: %s", text[:80])
         return
 
-    url = _API_BASE.format(token=TELEGRAM_BOT_TOKEN)
-    for chat_id in targets:
-        try:
-            resp = requests.post(
-                url,
-                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-                timeout=10,
-            )
-            if resp.status_code != 200:
-                logger.error("Gửi Telegram thất bại chat_id=%s status=%s body=%s", chat_id, resp.status_code, resp.text[:300])
-        except requests.RequestException:
-            logger.exception("Lỗi mạng khi gửi Telegram tới chat_id=%s", chat_id)
+    try:
+        queued = enqueue_messages(text, targets)
+        logger.info("Đã xếp %d tin Telegram vào outbox", queued)
+    except Exception:
+        logger.exception("Không thể lưu tin Telegram vào outbox")

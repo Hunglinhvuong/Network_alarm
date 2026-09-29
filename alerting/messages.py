@@ -17,13 +17,15 @@ from zoneinfo import ZoneInfo
 
 from config.settings import APP_TIMEZONE
 from escalation.engine import EscalationGroup
+from escalation.station_status import get_station_full_status
 from rca.engine import NodeRCAResult, StationRCAResult
 
 _ICON_DOWN = "🔴"
+_ICON_TRANS_DOWN = "🚨"
 _ICON_PARTIAL = "🟠"
 _ICON_UP = "🟢"
 _ICON_TRANS = "📡"
-_ICON_STATION = "🏢"
+_ICON_STATION = "🗼"
 
 
 def local_now() -> datetime:
@@ -35,10 +37,53 @@ def local_now() -> datetime:
     return datetime.now(ZoneInfo(APP_TIMEZONE))
 
 
-def format_down_alert(group: EscalationGroup, rca_result: NodeRCAResult) -> str:
-    icon = _ICON_STATION if group.node_type == "STATION" else _ICON_TRANS
+def _collect_device_types_from_station(station: dict | None) -> list[str]:
+    if not isinstance(station, dict):
+        return []
+
+    return sorted(
+        {
+            device.get("device_type") or device.get("type")
+            for device in station.get("devices", [])
+            if device.get("device_type") is not None or device.get("type") is not None
+        }
+    )
+
+
+def format_down_alert_single(group: EscalationGroup, rca_result: NodeRCAResult) -> str:
+    """Cảnh báo khi chỉ có 1 station full-down, không có sync node cha liên quan."""
+    icon = _ICON_STATION
+    title = f"{_ICON_DOWN} <b>MẤT LIÊN LẠC TOÀN BỘ TRẠM</b>"
+
+    station = getattr(rca_result, "station", None)
+    if not isinstance(station, dict) and len(group.station_site_ids) == 1:
+        site_id = next(iter(group.station_site_ids))
+        try:
+            station = get_station_full_status(site_id)
+        except ValueError:
+            station = None
+
+    device_types = _collect_device_types_from_station(station)
+    device_label = ", ".join(device_types) if device_types else "không xác định"
     lines = [
-        f"{_ICON_DOWN} <b>MẤT LIÊN LẠC TOÀN BỘ</b> {icon} <b>{group.node_name}</b> ({group.node_code})",
+        f"{title} {icon} <b>{group.node_name}</b> ({group.node_code})",
+        f"Loại node: {group.node_type}",
+        f"Thiết bị mất liên lạc: {device_label}",
+        "Trạm: " + ", ".join(sorted(group.station_site_codes)),
+        "",
+        rca_result.to_text(),
+        "",
+        f"Thời điểm phát hiện: {local_now().strftime('%Y-%m-%d %H:%M:%S')} ({APP_TIMEZONE})",
+    ]
+    return "\n".join(lines)
+
+
+def format_down_alert_node(group: EscalationGroup, rca_result: NodeRCAResult) -> str:
+    """Cảnh báo khi 1 node truyền dẫn cha mất liên lạc toàn bộ nhiều station cùng nhánh."""
+    icon = _ICON_TRANS
+    title = f"{_ICON_TRANS_DOWN} <b>MẤT LIÊN LẠC TOÀN BỘ NODE TRUYỀN DẪN</b>"
+    lines = [
+        f"{title} {icon} <b>{group.node_name}</b> ({group.node_code})",
         f"Loại node: {group.node_type}",
         f"Số trạm ảnh hưởng: {len(group.station_site_ids)}",
         "Trạm: " + ", ".join(sorted(group.station_site_codes)),
@@ -48,6 +93,13 @@ def format_down_alert(group: EscalationGroup, rca_result: NodeRCAResult) -> str:
         f"Thời điểm phát hiện: {local_now().strftime('%Y-%m-%d %H:%M:%S')} ({APP_TIMEZONE})",
     ]
     return "\n".join(lines)
+
+
+def format_down_alert(group: EscalationGroup, rca_result: NodeRCAResult) -> str:
+    """Compatibility wrapper: chọn formatter theo loại group."""
+    if group.node_type == "STATION" and len(group.station_site_ids) == 1:
+        return format_down_alert_single(group, rca_result)
+    return format_down_alert_node(group, rca_result)
 
 
 def format_recovered_alert(group: EscalationGroup) -> str:
