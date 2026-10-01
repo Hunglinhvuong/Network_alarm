@@ -35,7 +35,7 @@ network_alarm/                (tiếp)
 ├── alerting/
 │   ├── notifier.py             # gửi push alert qua Telegram HTTP API (dùng trong main_collector)
 │   ├── messages.py             # soạn nội dung tin nhắn DOWN/RECOVERED từ escalation + RCA
-│   └── bot/                    # bot tra cứu Telegram — TIẾN TRÌNH RIÊNG, chạy: python -m alerting.bot.app
+│   └── bot/                    # bot Telegram + collector nền, chạy cùng tiến trình
 │       ├── app.py
 │       └── handlers/           # registry pattern — thêm lệnh mới chỉ cần thêm 1 file ở đây
 │           ├── registry.py     # COMMAND_HANDLERS + decorator @command(name, description)
@@ -59,6 +59,54 @@ cp .env.example .env
 ```
 `config/settings.py` tự load `.env` bằng `python-dotenv`; biến đã export sẵn trong
 shell/systemd luôn được ưu tiên hơn giá trị trong `.env`.
+
+## Triển khai lên máy Linux dùng systemd
+
+Đặt checkout ở đường dẫn ổn định và dùng chính user sở hữu thư mục dự án để cài.
+Trên Ubuntu/Debian, cài Python và công cụ PostgreSQL client nếu máy chưa có:
+
+```bash
+sudo apt update
+sudo apt install python3 python3-venv postgresql-client
+```
+
+Tạo `.env` từ mẫu, đặt quyền chỉ chủ sở hữu đọc, rồi điền `PG_*`,
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_IDS` và `TELEGRAM_ADMIN_IDS`. Đặt
+`ALARM_SOURCE=oracle` cùng `ORACLE_*` nếu dùng Oracle. Installer từ chối password
+PostgreSQL mặc định và whitelist admin rỗng.
+
+Khởi tạo database mới một lần (đổi host/user/database cho đúng môi trường):
+
+```bash
+psql -h localhost -U postgres -d network_alarm -c "CREATE EXTENSION IF NOT EXISTS cube; CREATE EXTENSION IF NOT EXISTS earthdistance;"
+psql -h localhost -U postgres -d network_alarm -f schema.sql
+psql -h localhost -U postgres -d network_alarm -f db/telegram_outbox.sql
+```
+
+Với database đã có, backup trước; nếu `topo_link` còn dùng `child_site_id` /
+`parent_site_id`, chạy `db/migrate_topology_nodes.sql`. Luôn áp dụng
+`db/telegram_outbox.sql` để tạo/cập nhật outbox. Installer kiểm tra kết nối và
+các bảng cần thiết, không tự chạy schema hoặc migration.
+
+Cài và khởi động service:
+
+```bash
+test -f .env || cp .env.example .env
+chmod 600 .env
+# chỉnh .env trước khi tiếp tục
+bash deploy/deploy.sh install
+```
+
+Nếu `.env` chưa có, script tạo từ `.env.example` rồi dừng để bạn điền cấu hình.
+Script tạo virtualenv tại `.venv/` và sinh `network-alarm.service` ngay trong
+thư mục dự án. Nó đăng ký unit bằng đường dẫn tuyệt đối; systemd tạo symlink để
+tham chiếu file này, không copy unit sang nơi khác. Không di chuyển checkout sau
+khi cài; nếu đổi đường dẫn, chạy lại `install`.
+
+Quản lý service bằng `bash deploy/deploy.sh status`, `logs`, `restart` hoặc
+`uninstall`. Gỡ service không xóa `.env`, virtualenv hay dữ liệu database. Chỉ
+chạy một entry point: service này hoặc `python main_collector.py`, không chạy cả
+hai cùng lúc.
 
 Báo cáo tổng hợp mất liên lạc được gửi tới `TELEGRAM_ALERT_CHAT_IDS` cùng nơi với
 cảnh báo chủ động. Cấu hình `PERIODIC_REPORT_START_TIME` theo `HH:MM` trong
@@ -115,20 +163,18 @@ database trên SSD. Không chạy `VACUUM FULL` tự động trên ổ gần đ�
 
 ## Chạy thử với CSV (chưa có alarm thật)
 
-Cần chạy **2 tiến trình song song**:
+Cần chạy **một tiến trình** để vừa poll alarm, vừa nhận lệnh chat 1-1 và gửi
+cảnh báo group. Không chạy thêm `main_collector.py` cùng lúc với lệnh dưới đây.
 
 ```bash
 pip install -r requirements.txt
 
-# Tiến trình 1: poll alarm + sync + RCA + escalation + push cảnh báo
-python main_collector.py
-
-# Tiến trình 2: bot tra cứu (tương tác, /status /tra /path...)
+# Bot polling và collector nền trong cùng tiến trình
 python -m alerting.bot.app
 ```
 
-Sửa `sample_data/alarms.csv` (thêm/xoá dòng) trong lúc `main_collector.py` đang
-chạy để test: alarm mới, auto-clear, đồng bộ nhiều trạm cùng node cha (RCA bước 1
+Sửa `sample_data/alarms.csv` (thêm/xoá dòng) khi ứng dụng đang chạy để test:
+alarm mới, auto-clear, đồng bộ nhiều trạm cùng node cha (RCA bước 1
 + escalation gộp cảnh báo), power_fail liên quan (RCA bước 2), trạm lân cận cùng
 mất liên lạc (RCA bước 3).
 
@@ -149,6 +195,9 @@ export ORACLE_ALARM_TABLE=ALARM_ACTIVE
 (`DEVICE_CODE`, `ALARM_NAME`, `START_TIME`, `END_TIME`). Cần xác nhận lại schema
 thật với đội quản lý hệ thống nguồn rồi chỉnh `_build_query()` / `_map_row()` /
 `ALARM_NAME_MAP` cho khớp.
+
+Oracle collector giới hạn TCP connect mặc định 5 giây và mỗi call 10 giây; có
+thể chỉnh bằng `ORACLE_CONNECT_TIMEOUT_SEC` và `ORACLE_CALL_TIMEOUT_MS`.
 
 ## Path-to-root / nearest station ancestor
 
@@ -194,8 +243,12 @@ BỘ station con cháu của nó đều down (tận dụng tính đơn điệu c
 
 - `alerting/notifier.py`: `send_alert(text)` — xếp tin vào PostgreSQL outbox;
   `alerting/outbox.py` gửi tuần tự và retry độc lập với vòng poll.
-- `alerting/bot/app.py`: bot tương tác, polling `getUpdates`, chạy tiến trình
-  **riêng**: `python -m alerting.bot.app`.
+- `alerting/bot/app.py`: polling `getUpdates` và khởi động collector nền qua
+  lifecycle hooks; chạy duy nhất bằng `python -m alerting.bot.app` để nhận cả
+  lệnh tra cứu lẫn cảnh báo push. `main_collector.py` là entry point standalone
+  thay thế, không chạy đồng thời với bot app.
+- Trong bot app, collector được giám sát và tự thử lại sau lỗi với backoff từ
+  5 đến 60 giây; lỗi xử lý từng Telegram update được ghi log mà không dừng polling.
 - Mở rộng thêm lệnh tra cứu: tạo file mới trong `alerting/bot/handlers/`, viết
   hàm `async def`, gắn `@command("ten_lenh", "mô tả")`, rồi thêm 1 dòng import
   trong `alerting/bot/handlers/__init__.py`. Không cần sửa `app.py`.
@@ -216,12 +269,18 @@ BỘ station con cháu của nó đều down (tận dụng tính đơn điệu c
   tối đa một cha; kiểm tra cycle và một root phải được thực hiện ở tầng ứng dụng.
 - Thiết kế dữ liệu địa lý dùng `cube` và `earthdistance` thay vì PostGIS.
 
-**Lưu ý về schema:** `schema.sql` hiện khai báo `topo_link` theo
-`child_site_id`/`parent_site_id` và không có `trans_type`, trong khi code topology
-và `inputdata/import_initial_data.py` dùng `child_node_id`/`parent_node_id` cùng
-`trans_type`. Cần đồng bộ schema với code trước khi tạo mới hoặc migrate database;
-không coi hai định nghĩa này là tương thích. Các script trong `inputdata/` hiện
-cũng có cấu hình kết nối DB riêng, chưa đọc cấu hình tập trung từ `.env`.
+`schema.sql` và code topology dùng `child_node_id`/`parent_node_id` cùng
+`trans_type`, cho phép liên kết cả `STATION` lẫn `TRANS_NODE`. Với database đã
+tạo theo schema cũ (`child_site_id`/`parent_site_id`), backup trước rồi chạy
+migration một lần:
+
+```bash
+psql -h localhost -p 5432 -U postgres -d network_alarm -f db/migrate_topology_nodes.sql
+```
+
+Migration giữ lại các liên kết cũ (site ID và node ID dùng chung khóa), thêm
+`trans_type` và index cho truy vấn topo. Các script trong `inputdata/` hiện vẫn
+có cấu hình kết nối DB riêng, chưa đọc cấu hình tập trung từ `.env`.
 
 ## Nạp dữ liệu nền
 
@@ -285,7 +344,7 @@ Mặc định toàn hệ thống dùng `Asia/Ho_Chi_Minh`, có thể đổi bằ
 - `db/connection.py` đặt timezone cho PostgreSQL session khi mở kết nối. Dữ liệu
   `TIMESTAMPTZ` vẫn được PostgreSQL lưu theo UTC; timezone session ảnh hưởng cách
   chuyển đổi khi đọc/ghi.
-- `main_collector.py` và `alerting/bot/app.py` cấu hình timestamp của logging theo
+- Collector và `alerting/bot/app.py` cấu hình timestamp của logging theo
   timezone ứng dụng.
 - `alerting/messages.py` dùng `local_now()` để timestamp trong alert hiển thị
   timezone và tên múi giờ.
@@ -293,11 +352,11 @@ Mặc định toàn hệ thống dùng `Asia/Ho_Chi_Minh`, có thể đổi bằ
 Kiểm tra sau khi triển khai:
 
 1. Trong DB, chạy `SELECT now();` và xác nhận kết quả theo timezone session.
-2. Khởi động `python main_collector.py`; log khởi động sẽ nêu timezone cấu hình.
+2. Khởi động `python -m alerting.bot.app`; log khởi động sẽ nêu timezone cấu hình.
 3. Phát sinh một alarm thử và xác nhận Telegram hiển thị giờ cùng tên timezone.
 
 Để quay lại UTC, đặt `APP_TIMEZONE=UTC` trong `.env` hoặc môi trường rồi khởi
-động lại collector và bot.
+động lại ứng dụng.
 
 ## Hạng mục còn lại và lưu ý vận hành
 

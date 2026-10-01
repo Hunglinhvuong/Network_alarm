@@ -78,9 +78,9 @@ def get_station_loss_comm_breakdown() -> dict:
     return stations
 
 
-def get_fully_down_stations() -> dict:
+def get_fully_down_stations(breakdown: dict | None = None) -> dict:
     """site_id -> {site_code, site_name, node_id, alarm_ids: set} — CHỈ station mà mọi device đều loss_comm."""
-    breakdown = get_station_loss_comm_breakdown()
+    breakdown = breakdown if breakdown is not None else get_station_loss_comm_breakdown()
     result = {}
     for site_id, info in breakdown.items():
         if info["all_down"]:
@@ -93,12 +93,12 @@ def get_fully_down_stations() -> dict:
     return result
 
 
-def get_partial_loss_comm_devices() -> list:
+def get_partial_loss_comm_devices(breakdown: dict | None = None) -> list:
     """
     Danh sách device mất liên lạc riêng lẻ trong các station CHƯA down toàn bộ.
     Mỗi phần tử: {alarm_id, device_code, device_type, site_code, site_name}.
     """
-    breakdown = get_station_loss_comm_breakdown()
+    breakdown = breakdown if breakdown is not None else get_station_loss_comm_breakdown()
     partial = []
     for info in breakdown.values():
         if info["all_down"]:
@@ -116,13 +116,13 @@ def get_partial_loss_comm_devices() -> list:
     return partial
 
 
-def get_partial_down_stations() -> dict:
+def get_partial_down_stations(breakdown: dict | None = None) -> dict:
     """
     site_id -> {site_code, site_name} — CHỈ station có loss_comm 1 PHẦN (không toàn
     bộ). Dùng để diff theo từng chu kỳ poll ở mức STATION (không phải mức device)
     -> RCA và cảnh báo giờ chạy theo station, xem rca.engine.analyze_station().
     """
-    breakdown = get_station_loss_comm_breakdown()
+    breakdown = breakdown if breakdown is not None else get_station_loss_comm_breakdown()
     return {
         site_id: {"site_code": info["site_code"], "site_name": info["site_name"]}
         for site_id, info in breakdown.items()
@@ -130,9 +130,9 @@ def get_partial_down_stations() -> dict:
     }
 
 
-def get_station_full_status(site_id: int) -> dict:
+def get_station_full_statuses(site_ids: list[int]) -> dict[int, dict]:
     """
-    Chi tiết đầy đủ 1 station — dùng bởi RCA engine (rca.engine.analyze_station):
+    Chi tiết các station — dùng bởi RCA engine để tránh truy vấn từng station:
     {
         site_id, site_code, site_name,
         devices: [{device_id, device_code, device_type, loss_comm_active,
@@ -144,68 +144,96 @@ def get_station_full_status(site_id: int) -> dict:
     }
     Ném ValueError nếu station không tồn tại hoặc không có device nào loss_comm active.
     """
+    site_ids = list(dict.fromkeys(site_ids))
+    if not site_ids:
+        return {}
+
     with get_cursor(dict_cursor=True, commit=False) as cur:
         cur.execute(
             """
             SELECT s.site_id, s.site_code, s.site_name,
                    d.device_id, d.device_code, d.type AS device_type,
                    ae_comm.start_time AS loss_comm_start,
-                   ae_power.alarm_id AS power_fail_alarm_id
+                   ae_power.is_active AS power_fail_active
             FROM station s
             JOIN device d ON d.site_id = s.site_id
-            LEFT JOIN alarm_event ae_comm
-                ON ae_comm.device_id = d.device_id
-               AND ae_comm.alarm_name = 'loss_comm' AND ae_comm.status = 'active'
-            LEFT JOIN alarm_event ae_power
-                ON ae_power.device_id = d.device_id
-               AND ae_power.alarm_name = 'power_fail' AND ae_power.status = 'active'
-            WHERE s.site_id = %(site_id)s
+            LEFT JOIN LATERAL (
+                SELECT MIN(ae.start_time) AS start_time
+                FROM alarm_event ae
+                WHERE ae.device_id = d.device_id
+                  AND ae.alarm_name = 'loss_comm' AND ae.status = 'active'
+            ) ae_comm ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT EXISTS (
+                    SELECT 1 FROM alarm_event ae
+                    WHERE ae.device_id = d.device_id
+                      AND ae.alarm_name = 'power_fail' AND ae.status = 'active'
+                ) AS is_active
+            ) ae_power ON TRUE
+            WHERE s.site_id = ANY(%(site_ids)s)
+            ORDER BY s.site_id, d.device_id
             """,
-            {"site_id": site_id},
+            {"site_ids": site_ids},
         )
         rows = cur.fetchall()
 
-    if not rows:
-        raise ValueError(f"Không tìm thấy station site_id={site_id} hoặc station chưa có device")
-
-    devices = []
-    loss_comm_starts = []
-    power_affected = False
+    rows_by_site = {}
     for r in rows:
-        loss_comm_active = r["loss_comm_start"] is not None
-        power_fail_active = r["power_fail_alarm_id"] is not None
-        devices.append(
-            {
-                "device_id": r["device_id"],
-                "device_code": r["device_code"],
-                "device_type": r["device_type"],
-                "loss_comm_active": loss_comm_active,
-                "loss_comm_start": r["loss_comm_start"],
-                "power_fail_active": power_fail_active,
-            }
+        rows_by_site.setdefault(r["site_id"], []).append(r)
+
+    result = {}
+    for site_id in site_ids:
+        station_rows = rows_by_site.get(site_id, [])
+        if not station_rows:
+            raise ValueError(f"Không tìm thấy station site_id={site_id} hoặc station chưa có device")
+
+        devices = []
+        loss_comm_starts = []
+        power_affected = False
+        for r in station_rows:
+            loss_comm_active = r["loss_comm_start"] is not None
+            power_fail_active = r["power_fail_active"]
+            devices.append(
+                {
+                    "device_id": r["device_id"],
+                    "device_code": r["device_code"],
+                    "device_type": r["device_type"],
+                    "loss_comm_active": loss_comm_active,
+                    "loss_comm_start": r["loss_comm_start"],
+                    "power_fail_active": power_fail_active,
+                }
+            )
+            if loss_comm_active:
+                loss_comm_starts.append(r["loss_comm_start"])
+            if power_fail_active:
+                power_affected = True
+
+        if not loss_comm_starts:
+            raise ValueError(f"Station site_id={site_id} không có device nào loss_comm active -> không cần RCA")
+
+        total = len(devices)
+        down_count = len(loss_comm_starts)
+        comm_status = FULL_DOWN if down_count == total else PARTIAL_DOWN
+        affected_device_types = (
+            sorted({d["device_type"] for d in devices if d["loss_comm_active"]})
+            if comm_status == PARTIAL_DOWN
+            else []
         )
-        if loss_comm_active:
-            loss_comm_starts.append(r["loss_comm_start"])
-        if power_fail_active:
-            power_affected = True
+        first = station_rows[0]
+        result[site_id] = {
+            "site_id": first["site_id"],
+            "site_code": first["site_code"],
+            "site_name": first["site_name"],
+            "devices": devices,
+            "comm_status": comm_status,
+            "affected_device_types": affected_device_types,
+            "power_affected": power_affected,
+            "earliest_loss_comm_start": min(loss_comm_starts),
+        }
 
-    total = len(devices)
-    down_count = len(loss_comm_starts)
-    if down_count == 0:
-        raise ValueError(f"Station site_id={site_id} không có device nào loss_comm active -> không cần RCA")
+    return result
 
-    comm_status = FULL_DOWN if down_count == total else PARTIAL_DOWN
-    affected_device_types = (
-        sorted({d["device_type"] for d in devices if d["loss_comm_active"]}) if comm_status == PARTIAL_DOWN else []
-    )
 
-    return {
-        "site_id": rows[0]["site_id"],
-        "site_code": rows[0]["site_code"],
-        "site_name": rows[0]["site_name"],
-        "devices": devices,
-        "comm_status": comm_status,
-        "affected_device_types": affected_device_types,
-        "power_affected": power_affected,
-        "earliest_loss_comm_start": min(loss_comm_starts),
-    }
+def get_station_full_status(site_id: int) -> dict:
+    """Chi tiết đầy đủ một station; wrapper tương thích cho caller đơn lẻ."""
+    return get_station_full_statuses([site_id])[site_id]

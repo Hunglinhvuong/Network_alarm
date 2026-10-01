@@ -5,6 +5,7 @@ Dùng psycopg2 thuần + context manager để đảm bảo connection/cursor lu
 Đặc biệt: ép DB session timezone thành múi giờ của ứng dụng (APP_TIMEZONE).
 """
 import logging
+import threading
 from contextlib import contextmanager
 
 import psycopg2
@@ -14,7 +15,7 @@ from config.settings import DB_CONFIG, APP_TIMEZONE
 
 logger = logging.getLogger(__name__)
 
-_connection = None
+_connections = threading.local()
 
 
 def create_connection():
@@ -40,13 +41,14 @@ def create_connection():
 
 
 def get_connection():
-    """Trả về 1 connection dùng chung (singleton nhẹ), tự reconnect nếu đã đóng/lỗi."""
-    global _connection
-    if _connection is None or _connection.closed:
+    """Trả về connection riêng cho thread hiện tại, tự reconnect khi cần."""
+    connection = getattr(_connections, "connection", None)
+    if connection is None or connection.closed:
         logger.info("Đang mở kết nối PostgreSQL tới %s:%s/%s", DB_CONFIG["host"], DB_CONFIG["port"], DB_CONFIG["dbname"])
-        _connection = create_connection()
+        connection = create_connection()
+        _connections.connection = connection
         logger.info("Đã cấu hình DB session timezone thành: %s", APP_TIMEZONE)
-    return _connection
+    return connection
 
 
 @contextmanager
@@ -71,7 +73,8 @@ def get_cursor(dict_cursor=True, commit=True):
 
 
 def close_connection():
-    global _connection
-    if _connection is not None and not _connection.closed:
-        _connection.close()
-        _connection = None
+    connection = getattr(_connections, "connection", None)
+    if connection is not None:
+        if not connection.closed:
+            connection.close()
+        del _connections.connection

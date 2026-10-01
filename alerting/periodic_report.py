@@ -5,7 +5,7 @@ import math
 
 from alerting.messages import local_now
 from escalation.engine import compute_escalation
-from escalation.station_status import get_station_loss_comm_breakdown
+from escalation.station_status import get_fully_down_stations, get_station_loss_comm_breakdown
 
 
 def format_periodic_report(groups: list, breakdown: dict, report_time: datetime) -> str:
@@ -65,9 +65,10 @@ def format_periodic_report(groups: list, breakdown: dict, report_time: datetime)
 
 def build_periodic_report() -> str:
     """Tạo báo cáo từ trạng thái alarm và topology hiện tại trong DB."""
+    breakdown = get_station_loss_comm_breakdown()
     return format_periodic_report(
-        compute_escalation(),
-        get_station_loss_comm_breakdown(),
+        compute_escalation(get_fully_down_stations(breakdown)),
+        breakdown,
         local_now(),
     )
 

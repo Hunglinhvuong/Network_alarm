@@ -54,11 +54,14 @@ FOR EACH ROW EXECUTE FUNCTION check_max_device();
 -- 5. BẢNG LIÊN KẾT TỎA CÂY (TOPO LINK)
 CREATE TABLE topo_link (
     link_id           BIGSERIAL PRIMARY KEY,
-    child_site_id     BIGINT NOT NULL UNIQUE REFERENCES station(site_id) ON DELETE CASCADE,
-    parent_site_id    BIGINT REFERENCES station(site_id) ON DELETE SET NULL,
+    child_node_id     BIGINT NOT NULL UNIQUE REFERENCES node(node_id) ON DELETE CASCADE,
+    parent_node_id    BIGINT REFERENCES node(node_id) ON DELETE SET NULL,
+    trans_type        VARCHAR(50),
     effective_from    TIMESTAMPTZ DEFAULT now(),
     is_active         BOOLEAN DEFAULT true
 );
+CREATE INDEX idx_topo_link_parent_active
+    ON topo_link(parent_node_id) WHERE is_active = true;
 
 -- 6. BẢNG CẠNH LÂN CẬN (NEIGHBOR EDGE)
 CREATE TABLE neighbor_edge (

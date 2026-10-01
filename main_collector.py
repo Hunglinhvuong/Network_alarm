@@ -9,6 +9,7 @@ THEO MÚI GIỜ: logging được cấu hình để dùng múi giờ APP_TIMEZON
 import logging
 import signal
 import sys
+import threading
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -44,68 +45,66 @@ logging.Formatter.converter = app_time_converter
 
 logger = logging.getLogger("main_collector")
 
-_running = True
+def run_loop(stop_event=None, install_signal_handlers=True):
+    stop_event = stop_event or threading.Event()
+    if install_signal_handlers:
+        def handle_shutdown(signum, frame):
+            logger.info("Nhận tín hiệu dừng (%s) -> thoát vòng lặp an toàn", signum)
+            stop_event.set()
 
+        signal.signal(signal.SIGINT, handle_shutdown)
+        signal.signal(signal.SIGTERM, handle_shutdown)
 
-def _handle_shutdown(signum, frame):
-    global _running
-    logger.info("Nhận tín hiệu dừng (%s) -> thoát vòng lặp an toàn", signum)
-    _running = False
-
-
-def run_loop():
-    signal.signal(signal.SIGINT, _handle_shutdown)
-    signal.signal(signal.SIGTERM, _handle_shutdown)
-
-    collector = build_collector()
-    pipeline = AlarmPipeline()
-    next_report_at = next_report_time(
-        datetime.now(ZoneInfo(APP_TIMEZONE)),
-        PERIODIC_REPORT_START_TIME,
-        PERIODIC_REPORT_INTERVAL_MINUTES,
-    )
-    start_outbox_worker()
+    try:
+        collector = build_collector()
+        pipeline = AlarmPipeline()
+        next_report_at = next_report_time(
+            datetime.now(ZoneInfo(APP_TIMEZONE)),
+            PERIODIC_REPORT_START_TIME,
+            PERIODIC_REPORT_INTERVAL_MINUTES,
+        )
+        start_outbox_worker()
+    except Exception:
+        logger.exception("Không thể khởi tạo alarm collector")
+        stop_outbox_worker()
+        close_connection()
+        raise
     logger.info("Alarm Collector khởi động, nguồn: %s (múi giờ: %s)", collector.__class__.__name__, APP_TIMEZONE)
 
-    while _running:
-        cycle_start = time.time()
-        try:
-            records = collector.fetch_active_alarms()
-            sync_alarms(records)
-            result = pipeline.run_cycle()
-            if result["new_alerts"] or result["resolved_alerts"] or result["new_partial_alerts"] or result["resolved_partial_alerts"]:
-                logger.info("Pipeline: %s", result)
-            report_check_time = datetime.now(ZoneInfo(APP_TIMEZONE))
-            if report_check_time >= next_report_at:
-                logger.info("Gửi báo cáo tổng hợp định kỳ")
-                send_alert(build_periodic_report())
-                while next_report_at <= report_check_time:
-                    next_report_at += timedelta(minutes=PERIODIC_REPORT_INTERVAL_MINUTES)
-        except Exception:
-            logger.exception("Lỗi trong chu kỳ poll -> bỏ qua chu kỳ này, thử lại lần sau")
+    try:
+        while not stop_event.is_set():
+            cycle_start = time.time()
+            try:
+                records = collector.fetch_active_alarms()
+                sync_alarms(records)
+                result = pipeline.run_cycle()
+                if result["new_alerts"] or result["resolved_alerts"] or result["new_partial_alerts"] or result["resolved_partial_alerts"]:
+                    logger.info("Pipeline: %s", result)
+                report_check_time = datetime.now(ZoneInfo(APP_TIMEZONE))
+                if report_check_time >= next_report_at:
+                    logger.info("Gửi báo cáo tổng hợp định kỳ")
+                    send_alert(build_periodic_report())
+                    while next_report_at <= report_check_time:
+                        next_report_at += timedelta(minutes=PERIODIC_REPORT_INTERVAL_MINUTES)
+            except Exception:
+                logger.exception("Lỗi trong chu kỳ poll -> bỏ qua chu kỳ này, thử lại lần sau")
 
-        try:
-            interval = POLL_INTERVAL_ACTIVE_SEC if has_active_alarms() else POLL_INTERVAL_NORMAL_SEC
-        except Exception:
-            logger.exception("Không xác định được có alarm active hay không -> dùng interval mặc định")
-            interval = POLL_INTERVAL_NORMAL_SEC
+            try:
+                interval = POLL_INTERVAL_ACTIVE_SEC if has_active_alarms() else POLL_INTERVAL_NORMAL_SEC
+            except Exception:
+                logger.exception("Không xác định được có alarm active hay không -> dùng interval mặc định")
+                interval = POLL_INTERVAL_NORMAL_SEC
 
-        elapsed = time.time() - cycle_start
-        sleep_time = max(0.0, interval - elapsed)
-        until_report = (next_report_at - datetime.now(ZoneInfo(APP_TIMEZONE))).total_seconds()
-        sleep_time = min(sleep_time, max(0.0, until_report))
-        logger.debug("Chu kỳ mất %.2fs, ngủ %.2fs (interval=%ds)", elapsed, sleep_time, interval)
-
-        # ngủ theo từng đoạn nhỏ để phản ứng nhanh với tín hiệu dừng
-        slept = 0.0
-        while slept < sleep_time and _running:
-            step = min(1.0, sleep_time - slept)
-            time.sleep(step)
-            slept += step
-
-    stop_outbox_worker()
-    close_connection()
-    logger.info("Alarm Collector đã dừng.")
+            elapsed = time.time() - cycle_start
+            sleep_time = max(0.0, interval - elapsed)
+            until_report = (next_report_at - datetime.now(ZoneInfo(APP_TIMEZONE))).total_seconds()
+            sleep_time = min(sleep_time, max(0.0, until_report))
+            logger.debug("Chu kỳ mất %.2fs, ngủ %.2fs (interval=%ds)", elapsed, sleep_time, interval)
+            stop_event.wait(sleep_time)
+    finally:
+        stop_outbox_worker()
+        close_connection()
+        logger.info("Alarm Collector đã dừng.")
 
 
 if __name__ == "__main__":

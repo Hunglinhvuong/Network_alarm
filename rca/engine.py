@@ -19,6 +19,7 @@ RCAP (Root Cause Analysis Procedure) — mỗi bước dừng ngay khi có bằn
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from html import escape
 
 from db.connection import get_cursor
 from config.settings import (
@@ -27,7 +28,12 @@ from config.settings import (
     POWER_FAIL_CORRELATION_HOURS,
     NODE_TYPE_STATION,
 )
-from escalation.station_status import get_station_full_status, FULL_DOWN, PARTIAL_DOWN
+from escalation.station_status import (
+    get_station_full_status,
+    get_station_full_statuses,
+    FULL_DOWN,
+    PARTIAL_DOWN,
+)
 from escalation.engine import compute_escalation
 
 logger = logging.getLogger(__name__)
@@ -69,7 +75,7 @@ class StationRCAResult:
         else:
             lines.append(
                 f"Trạng thái: 🟠 MẤT LIÊN LẠC MỘT PHẦN — loại thiết bị ảnh hưởng: "
-                f"{', '.join(s['affected_device_types'])}"
+                f"{', '.join(escape(str(value)) for value in s['affected_device_types'])}"
             )
         if s["power_affected"]:
             lines.append("⚡ Ghi nhận mất điện tại trạm (tính cả station bị ảnh hưởng)")
@@ -79,18 +85,19 @@ class StationRCAResult:
         if self.step1_evidence:
             ev = self.step1_evidence
             lines.append(
-                f"- Đồng bộ cùng node cha: <b>{ev['node_name']}</b> ({ev['node_code']}, {ev['node_type']})"
-                f" — trạm ảnh hưởng: {', '.join(ev['affected_station_codes'])}"
+                f"- Đồng bộ cùng node cha: <b>{escape(str(ev['node_name']))}</b> "
+                f"({escape(str(ev['node_code']))}, {escape(str(ev['node_type']))})"
+                f" — trạm ảnh hưởng: {', '.join(escape(str(code)) for code in ev['affected_station_codes'])}"
             )
         if self.step2_evidence:
             ev = self.step2_evidence
             lines.append(
-                f"- Mất điện liên quan: thiết bị {ev['device_code']} lúc {ev['start_time']}"
+                f"- Mất điện liên quan: thiết bị {escape(str(ev['device_code']))} lúc {escape(str(ev['start_time']))}"
                 f" (trước loss_comm {ev['hours_before']:.1f}h)"
             )
         if self.step3_evidence:
             ev = self.step3_evidence
-            extra = f" ({', '.join(ev['affected_codes'])})" if ev["affected_codes"] else ""
+            extra = f" ({', '.join(escape(str(code)) for code in ev['affected_codes'])})" if ev["affected_codes"] else ""
             lines.append(f"- Trạm lân cận mất điện: {ev['affected_count']}/{ev['total_count']} trạm{extra}")
         return "\n".join(lines)
 
@@ -184,25 +191,38 @@ def _step2_power_fail(station: dict) -> dict:
     }
 
 
-def _fetch_neighbor_power_rows(site_id: int) -> list:
-    """Raw rows neighbor + power_fail active — dùng chung cho cả đánh giá 1 station
-    (analyze_station) và gộp nhiều station trong 1 node (analyze_group)."""
+def _fetch_neighbor_power_rows(site_ids: list[int]) -> list:
+    """Raw neighbor rows cho một hoặc nhiều station bằng một query."""
+    site_ids = list(dict.fromkeys(site_ids))
+    if not site_ids:
+        return []
+
     with get_cursor(dict_cursor=True, commit=False) as cur:
         cur.execute(
             """
-            SELECT s2.site_id, s2.site_code,
+            SELECT endpoints.source_site_id, s2.site_id, s2.site_code,
                    BOOL_OR(ae2.alarm_id IS NOT NULL) AS has_power_fail
             FROM neighbor_edge ne
+            CROSS JOIN LATERAL (
+                SELECT CASE
+                    WHEN ne.site_id_a = ANY(%(site_ids)s) THEN ne.site_id_a
+                    ELSE ne.site_id_b
+                END AS source_site_id,
+                CASE
+                    WHEN ne.site_id_a = ANY(%(site_ids)s) THEN ne.site_id_b
+                    ELSE ne.site_id_a
+                END AS neighbor_site_id
+            ) endpoints
             JOIN station s2
-                ON s2.site_id = CASE WHEN ne.site_id_a = %(site_id)s THEN ne.site_id_b ELSE ne.site_id_a END
+                ON s2.site_id = endpoints.neighbor_site_id
             JOIN device d2 ON d2.site_id = s2.site_id
             LEFT JOIN alarm_event ae2
                 ON ae2.device_id = d2.device_id
                AND ae2.alarm_name = 'power_fail' AND ae2.status = 'active'
-            WHERE ne.site_id_a = %(site_id)s OR ne.site_id_b = %(site_id)s
-            GROUP BY s2.site_id, s2.site_code
+            WHERE ne.site_id_a = ANY(%(site_ids)s) OR ne.site_id_b = ANY(%(site_ids)s)
+            GROUP BY endpoints.source_site_id, s2.site_id, s2.site_code
             """,
-            {"site_id": site_id},
+            {"site_ids": site_ids},
         )
         return cur.fetchall()
 
@@ -308,7 +328,7 @@ def _get_group_outage_timing(site_ids: list) -> dict:
 
 def _step3_neighbor_power(station: dict) -> dict:
     """Trạm lân cận (neighbor_edge, ≤ NEIGHBOR_DISTANCE_KM) có power_fail active không."""
-    rows = _fetch_neighbor_power_rows(station["site_id"])
+    rows = _fetch_neighbor_power_rows([station["site_id"]])
     total_count = len(rows)
     if total_count == 0:
         return None  # không có neighbor -> không đánh giá được bước này
@@ -330,12 +350,11 @@ def _step3_neighbor_power_multi(site_ids: list) -> dict:
     member_ids = set(site_ids)
     neighbor_has_power = {}
     neighbor_code = {}
-    for site_id in site_ids:
-        for r in _fetch_neighbor_power_rows(site_id):
-            if r["site_id"] in member_ids:
-                continue
-            neighbor_code[r["site_id"]] = r["site_code"]
-            neighbor_has_power[r["site_id"]] = neighbor_has_power.get(r["site_id"], False) or r["has_power_fail"]
+    for r in _fetch_neighbor_power_rows(site_ids):
+        if r["site_id"] in member_ids:
+            continue
+        neighbor_code[r["site_id"]] = r["site_code"]
+        neighbor_has_power[r["site_id"]] = neighbor_has_power.get(r["site_id"], False) or r["has_power_fail"]
 
     total_count = len(neighbor_has_power)
     if total_count == 0:
@@ -381,7 +400,7 @@ class NodeRCAResult:
         if self.outage_timing_evidence:
             ev = self.outage_timing_evidence
             lines.append(
-                f"- Các trạm trong node {self.node_name} không mất liên lạc đồng thời; "
+                f"- Các trạm trong node {escape(str(self.node_name))} không mất liên lạc đồng thời; "
                 f"có {ev['old_station_count']} trạm mất liên lạc từ trước, "
                 f"có {ev['new_station_count']} trạm mới phát hiện mất liên lạc vào "
                 f"{ev['detected_at'].strftime('%Y-%m-%d %H:%M:%S')}"
@@ -389,23 +408,28 @@ class NodeRCAResult:
             lines.append(
                 "- Thiết bị mới phát hiện mất liên lạc: "
                 + ", ".join(
-                    f"{d['site_name']} ({','.join(d['device_types'])})"
+                    f"{escape(str(d['site_name']))} "
+                    f"({','.join(escape(str(value)) for value in d['device_types'])})"
                     for d in ev["new_devices"]
                 )
             )
         if self.step2_evidence:
             ev = self.step2_evidence
             lines.append(
-                f"- Mất điện liên quan: thiết bị {ev['device_code']} (trạm {ev['site_code']}) lúc {ev['start_time']}"
+                f"- Mất điện liên quan: thiết bị {escape(str(ev['device_code']))} "
+                f"(trạm {escape(str(ev['site_code']))}) lúc {escape(str(ev['start_time']))}"
                 f" (trước loss_comm {ev['hours_before']:.1f}h)"
             )
         if self.step3_evidence:
             ev = self.step3_evidence
-            extra = f" ({', '.join(ev['affected_codes'])})" if ev["affected_codes"] else ""
+            extra = f" ({', '.join(escape(str(code)) for code in ev['affected_codes'])})" if ev["affected_codes"] else ""
             lines.append(f"- Trạm lân cận mất điện: {ev['affected_count']}/{ev['total_count']} trạm{extra}")
 
         if self.power_affected_codes:
-            lines.append(f"⚡ Ghi nhận mất điện tại trạm: {', '.join(self.power_affected_codes)}")
+            lines.append(
+                "⚡ Ghi nhận mất điện tại trạm: "
+                + ", ".join(escape(str(code)) for code in self.power_affected_codes)
+            )
 
         return "\n".join(lines)
 
@@ -424,7 +448,8 @@ def analyze_group(group) -> NodeRCAResult:
       -> không đạt -> bước 3 (neighbor của TOÀN BỘ group, loại trừ chính các
       station thành viên).
     """
-    stations = [get_station_full_status(sid) for sid in group.station_site_ids]
+    station_statuses = get_station_full_statuses(sorted(group.station_site_ids))
+    stations = list(station_statuses.values())
     station_codes = sorted(s["site_code"] for s in stations)
     power_affected_codes = sorted(s["site_code"] for s in stations if s["power_affected"])
 

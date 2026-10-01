@@ -45,12 +45,18 @@ ORACLE_COLLECTOR_CONFIG = {
     # Xem ghi chú TODO trong collectors/oracle_collector.py
     "table": os.environ.get("ORACLE_ALARM_TABLE", "ALARM_ACTIVE"),
 }
+ORACLE_CONNECT_TIMEOUT_SEC = float(os.environ.get("ORACLE_CONNECT_TIMEOUT_SEC", 5))
+ORACLE_CALL_TIMEOUT_MS = int(os.environ.get("ORACLE_CALL_TIMEOUT_MS", 10000))
+if min(ORACLE_CONNECT_TIMEOUT_SEC, ORACLE_CALL_TIMEOUT_MS) <= 0:
+    raise ValueError("Oracle connect/call timeout phải lớn hơn 0")
 
 # ---------- Polling ----------
 POLL_INTERVAL_NORMAL_SEC = int(os.environ.get("POLL_INTERVAL_NORMAL_SEC", 300))   # 5 phút, khi hệ thống yên
 POLL_INTERVAL_ACTIVE_SEC = int(os.environ.get("POLL_INTERVAL_ACTIVE_SEC", 60))    # 1 phút, khi đang có alarm active
 PERIODIC_REPORT_INTERVAL_MINUTES = int(os.environ.get("PERIODIC_REPORT_INTERVAL_MINUTES", 5))
 PERIODIC_REPORT_START_TIME = os.environ.get("PERIODIC_REPORT_START_TIME", "08:00")
+if min(POLL_INTERVAL_NORMAL_SEC, POLL_INTERVAL_ACTIVE_SEC, PERIODIC_REPORT_INTERVAL_MINUTES) <= 0:
+    raise ValueError("Polling intervals và periodic report interval phải lớn hơn 0")
 
 # ---------- RCA / nghiệp vụ (tham số hoá, chưa có bảng config trong DB) ----------
 NODE_SYNC_WINDOW_MINUTES = int(os.environ.get("NODE_SYNC_WINDOW_MINUTES", 10))      # bước 1: đồng bộ cùng node cha

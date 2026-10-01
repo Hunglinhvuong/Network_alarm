@@ -14,8 +14,8 @@ Thuật toán:
 import logging
 from dataclasses import dataclass, field
 
-from topology.path_to_root import get_path_to_root
-from topology.descendants import get_descendant_stations
+from topology.path_to_root import get_paths_to_root
+from topology.descendants import get_descendant_stations_many
 from escalation.station_status import get_fully_down_stations
 
 logger = logging.getLogger(__name__)
@@ -46,37 +46,36 @@ def get_active_loss_comm_stations() -> dict:
     return get_fully_down_stations()
 
 
-# cache trong 1 lần compute để tránh query lặp descendant cho cùng node_id
-def _cached_descendants(node_id, cache):
-    if node_id not in cache:
-        cache[node_id] = get_descendant_stations(node_id)
-    return cache[node_id]
-
-
-def compute_escalation() -> list:
+def compute_escalation(affected: dict | None = None) -> list:
     """
     Tính toán các EscalationGroup hiện tại dựa trên trạng thái loss_comm active
     trong DB ngay lúc gọi. Mỗi group là 1 node cấp cao nhất cần gửi cảnh báo;
     mọi station/alarm bên trong group đó coi như đã được "gộp", không cảnh báo
     riêng lẻ nữa.
     """
-    affected = get_active_loss_comm_stations()
+    affected = affected if affected is not None else get_active_loss_comm_stations()
     if not affected:
         return []
     affected_ids = set(affected.keys())
 
-    descendant_cache = {}
+    paths_by_station = get_paths_to_root([info["node_id"] for info in affected.values()])
+    ancestor_ids = {
+        node["node_id"]
+        for path in paths_by_station.values()
+        for node in path[1:]
+    }
+    descendants_by_node = get_descendant_stations_many(ancestor_ids)
     groups = {}  # node_id -> EscalationGroup
 
     for site_id, info in affected.items():
-        path = get_path_to_root(info["node_id"])
+        path = paths_by_station.get(info["node_id"], [])
         if not path:
             logger.warning("Station site_id=%s không có trong topo (path rỗng) -> escalate tại chính nó", site_id)
             best = {"node_id": info["node_id"], "node_code": info["site_code"], "node_name": info["site_name"], "node_type": "STATION"}
         else:
             best = path[0]  # tối thiểu escalate ở chính station đó
             for node in path[1:]:
-                desc = _cached_descendants(node["node_id"], descendant_cache)
+                desc = descendants_by_node.get(node["node_id"], set())
                 if desc and desc <= affected_ids:
                     best = node
                 else:

@@ -3,15 +3,17 @@ Truy vấn cây topo (node -> topo_link) bằng Recursive CTE.
 Dùng cho: escalation logic, quy TRANS_NODE về STATION gần nhất khi có cảnh báo.
 """
 import logging
+from collections import defaultdict
 
 from db.connection import get_cursor
 from config.settings import NODE_TYPE_STATION
 
 logger = logging.getLogger(__name__)
 
-_PATH_TO_ROOT_SQL = """
+_PATHS_TO_ROOT_SQL = """
 WITH RECURSIVE path AS (
     SELECT
+        n.node_id AS source_node_id,
         n.node_id,
         n.node_code,
         n.node_name,
@@ -20,11 +22,12 @@ WITH RECURSIVE path AS (
         0 AS depth
     FROM node n
     LEFT JOIN topo_link tl ON tl.child_node_id = n.node_id AND tl.is_active = TRUE
-    WHERE n.node_id = %(node_id)s
+    JOIN unnest(%(node_ids)s::bigint[]) AS requested(node_id) ON requested.node_id = n.node_id
 
     UNION ALL
 
     SELECT
+        path.source_node_id,
         n.node_id,
         n.node_code,
         n.node_name,
@@ -36,10 +39,27 @@ WITH RECURSIVE path AS (
     LEFT JOIN topo_link tl ON tl.child_node_id = n.node_id AND tl.is_active = TRUE
     WHERE path.depth < 100  -- chặn an toàn nếu lỡ có cycle lọt qua validate
 )
-SELECT node_id, node_code, node_name, node_type, depth
+SELECT source_node_id, node_id, node_code, node_name, node_type, depth
 FROM path
-ORDER BY depth ASC;
+ORDER BY source_node_id, depth ASC;
 """
+
+
+def get_paths_to_root(node_ids: list[int]) -> dict[int, list[dict]]:
+    """Trả về path node->root cho nhiều node bằng một recursive query."""
+    if not node_ids:
+        return {}
+
+    with get_cursor(dict_cursor=True, commit=False) as cur:
+        cur.execute(_PATHS_TO_ROOT_SQL, {"node_ids": list(set(node_ids))})
+        rows = cur.fetchall()
+
+    paths = defaultdict(list)
+    for row in rows:
+        paths[row["source_node_id"]].append(
+            {key: value for key, value in row.items() if key != "source_node_id"}
+        )
+    return dict(paths)
 
 
 def get_path_to_root(node_id: int) -> list:
@@ -48,10 +68,7 @@ def get_path_to_root(node_id: int) -> list:
     mỗi phần tử: {node_id, node_code, node_name, node_type, depth}.
     List rỗng nếu node_id không tồn tại.
     """
-    with get_cursor(dict_cursor=True, commit=False) as cur:
-        cur.execute(_PATH_TO_ROOT_SQL, {"node_id": node_id})
-        rows = cur.fetchall()
-    return [dict(r) for r in rows]
+    return get_paths_to_root([node_id]).get(node_id, [])
 
 
 def get_nearest_station_ancestor(node_id: int):

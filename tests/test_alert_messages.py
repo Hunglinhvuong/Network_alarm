@@ -41,8 +41,8 @@ class FormatDownAlertTests(unittest.TestCase):
             DummyRCA(conclusion="isolated", station={"devices": [{"device_type": "3G"}, {"device_type": "4G"}]})
         )
 
-        self.assertIn("TRẠM ĐƠN LẺ", text)
-        self.assertNotIn("SYNC NODE CHA", text)
+        self.assertIn("MẤT LIÊN LẠC TOÀN BỘ TRẠM", text)
+        self.assertNotIn("MẤT LIÊN LẠC TOÀN BỘ NODE TRUYỀN DẪN", text)
 
     def test_single_station_full_down_reads_real_device_types_from_station(self):
         group = DummyGroup(
@@ -74,8 +74,21 @@ class FormatDownAlertTests(unittest.TestCase):
 
         text = format_down_alert_node(group, DummyRCA(conclusion="sync_parent_node"))
 
-        self.assertIn("SYNC NODE CHA", text)
-        self.assertNotIn("TRẠM ĐƠN LẺ", text)
+        self.assertIn("MẤT LIÊN LẠC TOÀN BỘ NODE TRUYỀN DẪN", text)
+        self.assertNotIn("MẤT LIÊN LẠC TOÀN BỘ TRẠM", text)
+
+    def test_station_metadata_is_escaped_before_html_delivery(self):
+        group = DummyGroup(
+            node_type="STATION",
+            node_name="<b>unsafe</b>",
+            node_code="STA-01",
+            station_site_ids={101},
+            station_site_codes={"STA-01"},
+        )
+
+        text = format_down_alert_single(group, DummyRCA())
+
+        self.assertIn("&lt;b&gt;unsafe&lt;/b&gt;", text)
 
 
 if __name__ == "__main__":

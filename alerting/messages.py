@@ -13,6 +13,7 @@ THEO MÚIPLÁN GIỜ: tất cả datetime.now() được thay bằng local_now()
 APP_TIMEZONE thay vì UTC của hệ thống.
 """
 from datetime import datetime
+from html import escape
 from zoneinfo import ZoneInfo
 
 from config.settings import APP_TIMEZONE
@@ -26,6 +27,10 @@ _ICON_PARTIAL = "🟠"
 _ICON_UP = "🟢"
 _ICON_TRANS = "📡"
 _ICON_STATION = "🗼"
+
+
+def _html(value) -> str:
+    return escape(str(value))
 
 
 def local_now() -> datetime:
@@ -66,10 +71,10 @@ def format_down_alert_single(group: EscalationGroup, rca_result: NodeRCAResult) 
     device_types = _collect_device_types_from_station(station)
     device_label = ", ".join(device_types) if device_types else "không xác định"
     lines = [
-        f"{title} {icon} <b>{group.node_name}</b> ({group.node_code})",
-        f"Loại node: {group.node_type}",
-        f"Thiết bị mất liên lạc: {device_label}",
-        "Trạm: " + ", ".join(sorted(group.station_site_codes)),
+        f"{title} {icon} <b>{_html(group.node_name)}</b> ({_html(group.node_code)})",
+        f"Loại node: {_html(group.node_type)}",
+        f"Thiết bị mất liên lạc: {_html(device_label)}",
+        "Trạm: " + ", ".join(_html(code) for code in sorted(group.station_site_codes)),
         "",
         rca_result.to_text(),
         "",
@@ -83,10 +88,10 @@ def format_down_alert_node(group: EscalationGroup, rca_result: NodeRCAResult) ->
     icon = _ICON_TRANS
     title = f"{_ICON_TRANS_DOWN} <b>MẤT LIÊN LẠC TOÀN BỘ NODE TRUYỀN DẪN</b>"
     lines = [
-        f"{title} {icon} <b>{group.node_name}</b> ({group.node_code})",
-        f"Loại node: {group.node_type}",
+        f"{title} {icon} <b>{_html(group.node_name)}</b> ({_html(group.node_code)})",
+        f"Loại node: {_html(group.node_type)}",
         f"Số trạm ảnh hưởng: {len(group.station_site_ids)}",
-        "Trạm: " + ", ".join(sorted(group.station_site_codes)),
+        "Trạm: " + ", ".join(_html(code) for code in sorted(group.station_site_codes)),
         "",
         rca_result.to_text(),
         "",
@@ -105,9 +110,9 @@ def format_down_alert(group: EscalationGroup, rca_result: NodeRCAResult) -> str:
 def format_recovered_alert(group: EscalationGroup) -> str:
     icon = _ICON_STATION if group.node_type == "STATION" else _ICON_TRANS
     lines = [
-        f"{_ICON_UP} <b>ĐÃ KHÔI PHỤC</b> {icon} <b>{group.node_name}</b> ({group.node_code})",
+        f"{_ICON_UP} <b>ĐÃ KHÔI PHỤC</b> {icon} <b>{_html(group.node_name)}</b> ({_html(group.node_code)})",
         f"Số trạm đã khôi phục: {len(group.station_site_ids)}",
-        "Trạm: " + ", ".join(sorted(group.station_site_codes)),
+        "Trạm: " + ", ".join(_html(code) for code in sorted(group.station_site_codes)),
         "",
         f"Thời điểm: {local_now().strftime('%Y-%m-%d %H:%M:%S')} ({APP_TIMEZONE})",
     ]
@@ -118,8 +123,8 @@ def format_partial_station_alert(rca_result: StationRCAResult) -> str:
     """Station chỉ mất liên lạc 1 phần device -> báo riêng, RCA đã bỏ qua bước 1."""
     s = rca_result.station
     lines = [
-        f"{_ICON_PARTIAL} <b>MẤT LIÊN LẠC MỘT PHẦN</b> 🏢 <b>{s['site_name']}</b> ({s['site_code']})",
-        "Thiết bị ảnh hưởng: " + ", ".join(s["affected_device_types"]),
+        f"{_ICON_PARTIAL} <b>MẤT LIÊN LẠC MỘT PHẦN</b> 🏢 <b>{_html(s['site_name'])}</b> ({_html(s['site_code'])})",
+        "Thiết bị ảnh hưởng: " + ", ".join(_html(value) for value in s["affected_device_types"]),
         "",
         rca_result.to_text(),
         "",
@@ -131,7 +136,7 @@ def format_partial_station_alert(rca_result: StationRCAResult) -> str:
 def format_partial_station_recovered(station: dict) -> str:
     """station: {site_code, site_name} — snapshot lần trước (đã khôi phục toàn bộ, không còn partial)."""
     lines = [
-        f"{_ICON_UP} <b>ĐÃ KHÔI PHỤC</b> 🏢 <b>{station['site_name']}</b> ({station['site_code']})",
+        f"{_ICON_UP} <b>ĐÃ KHÔI PHỤC</b> 🏢 <b>{_html(station['site_name'])}</b> ({_html(station['site_code'])})",
         "",
         f"Thời điểm: {local_now().strftime('%Y-%m-%d %H:%M:%S')} ({APP_TIMEZONE})",
     ]

@@ -16,6 +16,7 @@ phần còn lại (sync, RCA, main loop) không bị ảnh hưởng.
 import logging
 
 from collectors.base import AlarmRecord, BaseAlarmCollector
+from config.settings import ORACLE_CALL_TIMEOUT_MS, ORACLE_CONNECT_TIMEOUT_SEC
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,15 @@ class OracleAlarmCollector(BaseAlarmCollector):
     def _connect(self):
         oracledb = self._get_driver()
         dsn = oracledb.makedsn(self.host, self.port, service_name=self.service_name)
-        return oracledb.connect(user=self.user, password=self.password, dsn=dsn)
+        params = oracledb.ConnectParams(tcp_connect_timeout=ORACLE_CONNECT_TIMEOUT_SEC)
+        connection = oracledb.connect(
+            user=self.user,
+            password=self.password,
+            dsn=dsn,
+            params=params,
+        )
+        connection.call_timeout = ORACLE_CALL_TIMEOUT_MS
+        return connection
 
     def _build_query(self) -> str:
         return f"""
@@ -67,6 +76,7 @@ class OracleAlarmCollector(BaseAlarmCollector):
 
     def fetch_active_alarms(self) -> list:
         conn = None
+        cur = None
         try:
             conn = self._connect()
             cur = conn.cursor()
@@ -79,10 +89,14 @@ class OracleAlarmCollector(BaseAlarmCollector):
             logger.debug("OracleAlarmCollector: đọc được %d alarm active", len(records))
             return records
         except Exception:
-            logger.exception("Lỗi khi lấy alarm từ Oracle — trả về danh sách rỗng để tránh auto-clear nhầm")
+            logger.exception("Lỗi khi lấy alarm từ Oracle; giữ nguyên trạng thái hiện tại và thử lại chu kỳ sau")
             # QUAN TRỌNG: không được trả [] khi lỗi kết nối, vì sync layer sẽ hiểu nhầm
             # là "tất cả alarm đã cleared". Ném lỗi lên để main loop giữ nguyên trạng thái active.
             raise
         finally:
-            if conn is not None:
-                conn.close()
+            try:
+                if cur is not None:
+                    cur.close()
+            finally:
+                if conn is not None:
+                    conn.close()

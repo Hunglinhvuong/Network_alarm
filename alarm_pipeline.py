@@ -24,7 +24,7 @@ cố, cảnh báo DOWN có thể gửi lại 1 lần (chấp nhận được, c�
 import logging
 
 from escalation.engine import compute_escalation
-from escalation.station_status import get_partial_down_stations
+from escalation.station_status import get_fully_down_stations, get_partial_down_stations, get_station_loss_comm_breakdown
 from rca.engine import analyze_group, analyze_station
 from alerting.messages import (
     format_down_alert,
@@ -45,9 +45,10 @@ class AlarmPipeline:
         self._last_partial = {}  # site_id -> {site_code, site_name} (partial-down, lần chạy trước)
 
     def run_cycle(self):
-        current_groups = compute_escalation()
+        breakdown = get_station_loss_comm_breakdown()
+        current_groups = compute_escalation(get_fully_down_stations(breakdown))
         current_map = {g.node_id: g for g in current_groups}
-        current_partial = get_partial_down_stations()
+        current_partial = get_partial_down_stations(breakdown)
 
         # union toàn bộ station đang full-down ở chu kỳ này (bất kể thuộc group nào)
         # -> dùng để phân biệt "thật sự khôi phục" với "chỉ escalate lên node cha cao hơn"

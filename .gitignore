@@ -1,4 +1,6 @@
-.env/
+.env
 inputdata/
 venv/
 Description/
+.venv/
+network-alarm.service
