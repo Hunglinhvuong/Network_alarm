@@ -291,22 +291,85 @@ Các CSV đầu vào nằm trong `inputdata/`:
 - `trans_node.csv`: `node_code`, `node_name`, `equipment_type`.
 - `topo.csv`: `child_node_code`, `parent_node_code`, `trans_type`.
 
-Chạy các script từ thư mục `inputdata/` vì đường dẫn CSV hiện tính theo thư mục
-làm việc:
+### Quy trình cập nhật
+
+Áp dụng quy trình này khi thêm trạm, đổi thiết bị hoặc thay đổi tuyến truyền dẫn.
+Trước khi sửa dữ liệu trên môi trường thật, dừng collector để tránh xử lý trong
+lúc danh mục đang thay đổi và tạo backup PostgreSQL:
+
+```bash
+pg_dump -h localhost -p 5432 -U postgres -d network_alarm -Fc -f network_alarm_before_catalog_update.dump
+```
+
+Sửa CSV theo các quy tắc sau:
+
+- **Thêm trạm:** thêm một dòng vào `station.csv`, các thiết bị của trạm vào
+  `device.csv`, và một dòng cho trạm trong `topo.csv`. `site_code` trong hai CSV
+  phải khớp; `child_node_code` và `parent_node_code` trong topo phải dùng đúng mã
+  có trong `station.csv` hoặc `trans_node.csv`.
+- **Thêm nút truyền dẫn:** thêm vào `trans_node.csv` và khai báo nút cùng liên
+  kết cha-con của nó trong `topo.csv`.
+- **Đổi đường truyền:** sửa `parent_node_code` và/hoặc `trans_type` của node bị
+  ảnh hưởng trong `topo.csv`. Mỗi node chỉ có một cha; node gốc duy nhất có
+  `parent_node_code` để trống. Giữ đầy đủ các node trong topo, không chỉ các dòng
+  vừa thay đổi.
+- **Đổi thông tin trạm/thiết bị:** sửa dòng có cùng `site_code` hoặc
+  `device_code`; import sẽ cập nhật thông tin theo mã đó.
+
+Chạy import, kiểm tra DB, rồi đồng bộ lại cạnh lân cận. Các script đọc đường dẫn
+CSV tương đối từ thư mục hiện hành nên phải chạy từ `inputdata/`:
 
 ```bash
 cd inputdata
 python import_initial_data.py
 python validate_data.py
+```
+
+`import_initial_data.py` upsert station, node, device và topology trong một
+transaction; lỗi sẽ rollback toàn bộ lần import. Script kiểm tra topo có một
+root và không có cycle trước khi ghi. Sau đó `validate_data.py` kiểm tra một số
+điều kiện toàn vẹn trên DB nhưng chỉ in kết quả, không tự chặn bước tiếp theo.
+Đọc kết quả và xử lý mọi vấn đề trước khi tiếp tục. Khi dữ liệu đã hợp lệ, vẫn
+ở thư mục `inputdata/`, chạy:
+
+```bash
 python neighbor_edge.py
 ```
 
-`import_initial_data.py` upsert station, node, device và topology; kiểm tra cây
-trước khi ghi topology nhưng hiện không prune các bản ghi đã bị xóa khỏi CSV.
-`validate_data.py` là bước riêng để kiểm tra toàn vẹn sau import.
-`neighbor_edge.py` tạo cạnh Delaunay rồi lọc theo khoảng cách Haversine tối đa
-7 km; cần ít nhất 4 station active. Hãy kiểm tra schema và cấu hình DB của các
-script trước khi chạy trên môi trường thật.
+`neighbor_edge.py` tạo lại cạnh Delaunay, lọc theo khoảng cách
+Haversine tối đa 7 km và xóa các cạnh cũ không còn trong kết quả; cần ít nhất 4
+station có `status=active`. Nếu topo import thành công nhưng tạo neighbor lỗi,
+kiểm tra tọa độ và số trạm active; topo đã commit và không bị rollback cùng bước
+này.
+
+### Gỡ trạm hoặc node
+
+Các script hiện **không tự xóa** dữ liệu khi một dòng bị bỏ khỏi CSV. Bỏ trạm,
+thiết bị hoặc node khỏi file chỉ khiến dòng đó không được cập nhật; bản ghi cũ
+còn trong DB. Tương tự, `status=inactive` chỉ cập nhật trạng thái trạm:
+`neighbor_edge.py` sẽ không dùng trạm inactive để sinh cạnh, nhưng các truy vấn
+escalation hiện chưa lọc theo `station.status`, nên không xem đây là cách chắc
+chắn để ngừng giám sát trạm.
+
+Vì lịch sử `alarm_event` tham chiếu thiết bị, không xóa trực tiếp station/device
+bằng SQL hoặc chỉ xóa các dòng CSV để gỡ trạm. Trước khi ngừng giám sát hoặc xóa
+hẳn một node cần có kế hoạch xử lý lịch sử alarm, thiết bị, các node con và topo;
+thực hiện bằng migration/script bảo trì được rà soát riêng. Nếu chỉ đổi tuyến,
+hãy giữ node và cập nhật cha của nó cùng các node con bị ảnh hưởng trong
+`topo.csv`.
+
+### Lưu ý về đồng bộ topo
+
+- `topo.csv` cần mô tả cây đầy đủ cho tất cả node đã đăng ký trong DB, có đúng
+  một root. Import kiểm tra cả các node đang có trong DB, kể cả node cũ không còn
+  xuất hiện trong CSV; vì vậy không thể dùng cách chỉ ghi các liên kết vừa đổi.
+- Import cập nhật `parent_node_id`, `trans_type` và đặt `effective_from=now()`
+  trên link hiện có; đây không phải lịch sử topo và thời điểm cũ bị thay thế.
+- Import hiện không đặt lại `topo_link.is_active`. Nếu một link từng bị đánh dấu
+  inactive trong DB, sửa CSV rồi import chưa đủ để kích hoạt lại link đó.
+- Các script trong `inputdata/` có `DB_CONFIG` riêng, chưa đọc cấu hình tập trung
+  từ `.env`. Kiểm tra và sửa cấu hình DB trong cả `import_initial_data.py`,
+  `validate_data.py`, `neighbor_edge.py` trước khi chạy ở môi trường khác.
 
 ## Quy tắc RCA chi tiết
 
