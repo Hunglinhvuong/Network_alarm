@@ -152,8 +152,8 @@ StartLimitBurst=5
 Type=simple
 User=$service_user
 Group=$service_group
-WorkingDirectory=$(systemd_quote "$PROJECT_DIR")
-ExecStart=$(systemd_quote "$VENV_DIR/bin/python") -m alerting.bot.app
+WorkingDirectory=$PROJECT_DIR
+ExecStart=$VENV_DIR/bin/python -m alerting.bot.app
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 Restart=on-failure
