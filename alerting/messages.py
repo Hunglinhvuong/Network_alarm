@@ -123,7 +123,7 @@ def format_partial_station_alert(rca_result: StationRCAResult) -> str:
     """Station chỉ mất liên lạc 1 phần device -> báo riêng, RCA đã bỏ qua bước 1."""
     s = rca_result.station
     lines = [
-        f"{_ICON_PARTIAL} <b>MẤT LIÊN LẠC MỘT PHẦN</b> 🏢 <b>{_html(s['site_name'])}</b> ({_html(s['site_code'])})",
+        f"{_ICON_PARTIAL} <b>MẤT LIÊN LẠC MỘT PHẦN</b> 🗼 <b>{_html(s['site_name'])}</b> ({_html(s['site_code'])})",
         "Thiết bị ảnh hưởng: " + ", ".join(_html(value) for value in s["affected_device_types"]),
         "",
         rca_result.to_text(),
@@ -136,7 +136,7 @@ def format_partial_station_alert(rca_result: StationRCAResult) -> str:
 def format_partial_station_recovered(station: dict) -> str:
     """station: {site_code, site_name} — snapshot lần trước (đã khôi phục toàn bộ, không còn partial)."""
     lines = [
-        f"{_ICON_UP} <b>ĐÃ KHÔI PHỤC</b> 🏢 <b>{_html(station['site_name'])}</b> ({_html(station['site_code'])})",
+        f"{_ICON_UP} <b>ĐÃ KHÔI PHỤC</b> 📶 <b>{_html(station['site_name'])}</b> ({_html(station['site_code'])})",
         "",
         f"Thời điểm: {local_now().strftime('%Y-%m-%d %H:%M:%S')} ({APP_TIMEZONE})",
     ]
