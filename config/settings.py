@@ -27,7 +27,7 @@ DB_CONFIG = {
 }
 
 # ---------- Alarm Collector ----------
-# "csv" (test nội bộ hiện tại) | "oracle" (hệ thống thật sau này)
+# "csv" (test nội bộ) | "oracle" | "psql" (PostgreSQL nguồn)
 ALARM_SOURCE = os.environ.get("ALARM_SOURCE", "csv")
 
 CSV_COLLECTOR_CONFIG = {
@@ -49,6 +49,20 @@ ORACLE_CONNECT_TIMEOUT_SEC = float(os.environ.get("ORACLE_CONNECT_TIMEOUT_SEC", 
 ORACLE_CALL_TIMEOUT_MS = int(os.environ.get("ORACLE_CALL_TIMEOUT_MS", 10000))
 if min(ORACLE_CONNECT_TIMEOUT_SEC, ORACLE_CALL_TIMEOUT_MS) <= 0:
     raise ValueError("Oracle connect/call timeout phải lớn hơn 0")
+
+PSQL_COLLECTOR_CONFIG = {
+    "host": os.environ.get("PSQL_HOST", ""),
+    "port": int(os.environ.get("PSQL_PORT", 5432)),
+    "dbname": os.environ.get("PSQL_DBNAME", ""),
+    "user": os.environ.get("PSQL_USER", ""),
+    "password": os.environ.get("PSQL_PASSWORD", ""),
+    # Bảng nguồn cần có DEVICE_CODE, ALARM_NAME, START_TIME, END_TIME.
+    "table": os.environ.get("PSQL_ALARM_TABLE", "ALARM_ACTIVE"),
+}
+PSQL_CONNECT_TIMEOUT_SEC = int(os.environ.get("PSQL_CONNECT_TIMEOUT_SEC", 5))
+PSQL_QUERY_TIMEOUT_MS = int(os.environ.get("PSQL_QUERY_TIMEOUT_MS", 10000))
+if min(PSQL_CONNECT_TIMEOUT_SEC, PSQL_QUERY_TIMEOUT_MS) <= 0:
+    raise ValueError("PSQL connect/query timeout phải lớn hơn 0")
 
 # ---------- Polling ----------
 POLL_INTERVAL_NORMAL_SEC = int(os.environ.get("POLL_INTERVAL_NORMAL_SEC", 300))   # 5 phút, khi hệ thống yên

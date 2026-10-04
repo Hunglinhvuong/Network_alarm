@@ -13,6 +13,7 @@ network_alarm/
 │   ├── base.py               # interface BaseAlarmCollector + AlarmRecord
 │   ├── csv_collector.py      # đọc alarm từ CSV (dùng để test)
 │   ├── oracle_collector.py   # đọc alarm từ Oracle (nguồn thật, sau này)
+│   ├── psql_collector.py     # đọc alarm từ PostgreSQL nguồn
 │   ├── factory.py            # chọn collector theo config.ALARM_SOURCE
 │   └── alarm_sync.py         # upsert alarm mới + auto-clear alarm hết
 ├── topology/
@@ -72,7 +73,8 @@ sudo apt install python3 python3-venv postgresql-client
 
 Tạo `.env` từ mẫu, đặt quyền chỉ chủ sở hữu đọc, rồi điền `PG_*`,
 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_IDS` và `TELEGRAM_ADMIN_IDS`. Đặt
-`ALARM_SOURCE=oracle` cùng `ORACLE_*` nếu dùng Oracle. Installer từ chối password
+`ALARM_SOURCE=oracle` cùng `ORACLE_*` nếu dùng Oracle,
+hoặc `ALARM_SOURCE=psql` cùng `PSQL_*` nếu đọc từ PostgreSQL khác. Installer từ chối password
 PostgreSQL mặc định và whitelist admin rỗng.
 
 Khởi tạo database mới một lần (đổi host/user/database cho đúng môi trường):
@@ -198,6 +200,23 @@ thật với đội quản lý hệ thống nguồn rồi chỉnh `_build_query(
 
 Oracle collector giới hạn TCP connect mặc định 5 giây và mỗi call 10 giây; có
 thể chỉnh bằng `ORACLE_CONNECT_TIMEOUT_SEC` và `ORACLE_CALL_TIMEOUT_MS`.
+
+## Chuyển sang nguồn PostgreSQL
+
+Database đích của ứng dụng vẫn dùng các biến `PG_*`. Để đọc alarm từ một
+PostgreSQL khác, đặt `ALARM_SOURCE=psql` và cấu hình riêng nguồn bằng `PSQL_*`:
+
+```bash
+export ALARM_SOURCE=psql
+export PSQL_HOST=... PSQL_PORT=5432 PSQL_DBNAME=... PSQL_USER=... PSQL_PASSWORD=...
+export PSQL_ALARM_TABLE=public.ALARM_ACTIVE
+```
+
+Bảng nguồn cần có các cột `DEVICE_CODE`, `ALARM_NAME`, `START_TIME`, `END_TIME`;
+collector lấy các dòng `END_TIME IS NULL` và map tên alarm như Oracle collector.
+`PSQL_ALARM_TABLE` nhận tên bảng hoặc `schema.table`. Timeout mặc định là 5 giây
+để kết nối và 10 giây cho truy vấn; có thể chỉnh bằng
+`PSQL_CONNECT_TIMEOUT_SEC` và `PSQL_QUERY_TIMEOUT_MS`.
 
 ## Path-to-root / nearest station ancestor
 

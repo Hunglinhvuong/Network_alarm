@@ -1,11 +1,17 @@
 """
-Factory: chọn collector theo config.ALARM_SOURCE ("csv" | "oracle").
+Factory: chọn collector theo config.ALARM_SOURCE ("csv" | "oracle" | "psql").
 Đây là điểm DUY NHẤT cần sửa khi chuyển nguồn alarm thật -> chỉ đổi ENV
-ALARM_SOURCE=oracle + set ORACLE_* trong settings, không cần đổi code chỗ khác.
+ALARM_SOURCE=oracle/psql + set biến nguồn tương ứng trong settings, không cần đổi code chỗ khác.
 """
-from config.settings import ALARM_SOURCE, CSV_COLLECTOR_CONFIG, ORACLE_COLLECTOR_CONFIG
+from config.settings import (
+    ALARM_SOURCE,
+    CSV_COLLECTOR_CONFIG,
+    ORACLE_COLLECTOR_CONFIG,
+    PSQL_COLLECTOR_CONFIG,
+)
 from collectors.csv_collector import CSVAlarmCollector
 from collectors.oracle_collector import OracleAlarmCollector
+from collectors.psql_collector import PSQLAlarmCollector
 
 
 def build_collector():
@@ -21,5 +27,15 @@ def build_collector():
             password=cfg["password"],
             table=cfg["table"],
         )
+    elif ALARM_SOURCE == "psql":
+        cfg = PSQL_COLLECTOR_CONFIG
+        return PSQLAlarmCollector(
+            host=cfg["host"],
+            port=cfg["port"],
+            dbname=cfg["dbname"],
+            user=cfg["user"],
+            password=cfg["password"],
+            table=cfg["table"],
+        )
     else:
-        raise ValueError(f"ALARM_SOURCE không hợp lệ: {ALARM_SOURCE!r} (chỉ hỗ trợ 'csv' hoặc 'oracle')")
+        raise ValueError(f"ALARM_SOURCE không hợp lệ: {ALARM_SOURCE!r} (chỉ hỗ trợ 'csv', 'oracle' hoặc 'psql')")

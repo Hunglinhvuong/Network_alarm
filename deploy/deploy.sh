@@ -52,6 +52,7 @@ from config.settings import (
     CSV_COLLECTOR_CONFIG,
     DB_CONFIG,
     ORACLE_COLLECTOR_CONFIG,
+    PSQL_COLLECTOR_CONFIG,
     TELEGRAM_ADMIN_IDS,
     TELEGRAM_ALERT_CHAT_IDS,
     TELEGRAM_BOT_TOKEN,
@@ -70,12 +71,16 @@ elif any(not user_id.isdigit() for user_id in TELEGRAM_ADMIN_IDS):
     errors.append("TELEGRAM_ADMIN_IDS must contain numeric Telegram user IDs")
 if DB_CONFIG["password"] in ("", "postgres"):
     errors.append("Set a non-default PG_PASSWORD in .env")
-if ALARM_SOURCE not in ("csv", "oracle"):
-    errors.append("ALARM_SOURCE must be either csv or oracle")
+if ALARM_SOURCE not in ("csv", "oracle", "psql"):
+    errors.append("ALARM_SOURCE must be csv, oracle, or psql")
 if ALARM_SOURCE == "oracle":
     for key in ("host", "service_name", "user", "password"):
         if not ORACLE_COLLECTOR_CONFIG[key]:
             errors.append(f"ORACLE_{key.upper()} is required when ALARM_SOURCE=oracle")
+if ALARM_SOURCE == "psql":
+    for key in ("host", "dbname", "user", "password"):
+        if not PSQL_COLLECTOR_CONFIG[key]:
+            errors.append(f"PSQL_{key.upper()} is required when ALARM_SOURCE=psql")
 if ALARM_SOURCE == "csv":
     from pathlib import Path
 
