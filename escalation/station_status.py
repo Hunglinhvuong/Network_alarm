@@ -39,7 +39,7 @@ def get_station_loss_comm_breakdown() -> dict:
             )
             SELECT s.site_id, s.site_code, s.site_name,
                    d.device_id, d.device_code, d.type AS device_type,
-                   ae.alarm_id
+                   ae.alarm_id, ae.start_time AS loss_comm_start
             FROM affected_sites af
             JOIN station s ON s.site_id = af.site_id
             JOIN device d ON d.site_id = s.site_id
@@ -59,18 +59,27 @@ def get_station_loss_comm_breakdown() -> dict:
                 "node_id": r["site_id"],  # station.site_id là PK/FK thẳng tới node.node_id
                 "total_devices": 0,
                 "down_devices": [],
+                "earliest_loss_comm_start": None,
             },
         )
         entry["total_devices"] += 1
         if r["alarm_id"] is not None:
-            entry["down_devices"].append(
-                {
-                    "device_id": r["device_id"],
-                    "device_code": r["device_code"],
-                    "device_type": r["device_type"],
-                    "alarm_id": r["alarm_id"],
-                }
-            )
+            device = {
+                "device_id": r["device_id"],
+                "device_code": r["device_code"],
+                "device_type": r["device_type"],
+                "alarm_id": r["alarm_id"],
+                "loss_comm_start": r["loss_comm_start"],
+            }
+            entry["down_devices"].append(device)
+            if r["loss_comm_start"] is not None:
+                if entry["earliest_loss_comm_start"] is None:
+                    entry["earliest_loss_comm_start"] = r["loss_comm_start"]
+                else:
+                    entry["earliest_loss_comm_start"] = min(
+                        entry["earliest_loss_comm_start"],
+                        r["loss_comm_start"],
+                    )
 
     for entry in stations.values():
         entry["all_down"] = entry["total_devices"] > 0 and len(entry["down_devices"]) == entry["total_devices"]
@@ -89,6 +98,7 @@ def get_fully_down_stations(breakdown: dict | None = None) -> dict:
                 "site_name": info["site_name"],
                 "node_id": info["node_id"],
                 "alarm_ids": {d["alarm_id"] for d in info["down_devices"]},
+                "earliest_loss_comm_start": info.get("earliest_loss_comm_start"),
             }
     return result
 

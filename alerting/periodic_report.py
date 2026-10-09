@@ -8,6 +8,14 @@ from escalation.engine import compute_escalation
 from escalation.station_status import get_fully_down_stations, get_station_loss_comm_breakdown
 
 
+def _format_hours_since(start: datetime | None, report_time: datetime) -> str:
+    """Chuyển thời điểm lost_comm sang chuỗi giờ tương đối."""
+    if start is None:
+        return "không xác định"
+    hours = (report_time - start).total_seconds() / 3600.0
+    return f"{hours:.1f}h"
+
+
 def format_periodic_report(groups: list, breakdown: dict, report_time: datetime) -> str:
     """Định dạng báo cáo, không liệt kê lại station đã gộp trong node truyền dẫn."""
     parent_groups = [group for group in groups if len(group.station_site_ids) > 1]
@@ -29,9 +37,17 @@ def format_periodic_report(groups: list, breakdown: dict, report_time: datetime)
         for group in sorted(parent_groups, key=lambda item: (item.node_name or item.node_code, item.node_code)):
             node_name = escape(group.node_name or group.node_code)
             node_code = escape(group.node_code)
+            starts = [
+                breakdown[site_id]["earliest_loss_comm_start"]
+                for site_id in group.station_site_ids
+                if breakdown.get(site_id) and breakdown[site_id].get("earliest_loss_comm_start") is not None
+            ]
+            group_start = min(starts) if starts else None
+            hours_since = _format_hours_since(group_start, report_time)
+            suffix = f", mất liên lạc {hours_since}" if group_start is not None else ""
             lines.append(
                 f"   ▫️{node_name} ({node_code}): "
-                f"{len(group.station_site_ids)} trạm ảnh hưởng."
+                f"{len(group.station_site_ids)} trạm ảnh hưởng{suffix}."
             )
     else:
         lines.append("   ▫️Không có.")
@@ -53,9 +69,10 @@ def format_periodic_report(groups: list, breakdown: dict, report_time: datetime)
             )
             types_label = ", ".join(escape(value) for value in device_types) or "không xác định"
             state = "full-down" if info["all_down"] else "partial-down"
+            hours_since = _format_hours_since(info.get("earliest_loss_comm_start"), report_time)
             lines.append(
                 f"   ▫️{escape(info['site_name'])} ({escape(info['site_code'])}) "
-                f"[{state}]: {types_label}."
+                f"[{state}]: {types_label}, mất liên lạc {hours_since}."
             )
     else:
         lines.append("   ▫️Không có.")

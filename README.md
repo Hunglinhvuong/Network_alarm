@@ -449,6 +449,15 @@ Kiểm tra sau khi triển khai:
 Để quay lại UTC, đặt `APP_TIMEZONE=UTC` trong `.env` hoặc môi trường rồi khởi
 động lại ứng dụng.
 
+
+## Backup and restore:
+sudo pg_dump -U postgres -d network_alarm -F p -f ~/network_alarm.sql
+scp /home/hungnguyenhuu/network_alarm.sql Wyse:~/network_alarm.sql
+
+cp ~/network_alarm.sql /tmp/
+sudo -u postgres psql -d network_alarm -f /tmp/network_alarm.sql
+
+
 ## Hạng mục còn lại và lưu ý vận hành
 
 - Dashboard map/tree chưa được triển khai.
