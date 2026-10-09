@@ -65,7 +65,7 @@ if min(PSQL_CONNECT_TIMEOUT_SEC, PSQL_QUERY_TIMEOUT_MS) <= 0:
 # ---------- Polling ----------
 POLL_INTERVAL_NORMAL_SEC = int(os.environ.get("POLL_INTERVAL_NORMAL_SEC", 300))   # 5 phút, khi hệ thống yên
 POLL_INTERVAL_ACTIVE_SEC = int(os.environ.get("POLL_INTERVAL_ACTIVE_SEC", 90))    # 1 phút, khi đang có alarm active
-PERIODIC_REPORT_INTERVAL_MINUTES = int(os.environ.get("PERIODIC_REPORT_INTERVAL_MINUTES", 5))
+PERIODIC_REPORT_INTERVAL_MINUTES = int(os.environ.get("PERIODIC_REPORT_INTERVAL_MINUTES", 30))
 PERIODIC_REPORT_START_TIME = os.environ.get("PERIODIC_REPORT_START_TIME", "08:00")
 if min(POLL_INTERVAL_NORMAL_SEC, POLL_INTERVAL_ACTIVE_SEC, PERIODIC_REPORT_INTERVAL_MINUTES) <= 0:
     raise ValueError("Polling intervals và periodic report interval phải lớn hơn 0")
