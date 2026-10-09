@@ -72,7 +72,7 @@ def format_periodic_report(groups: list, breakdown: dict, report_time: datetime)
             hours_since = _format_hours_since(info.get("earliest_loss_comm_start"), report_time)
             lines.append(
                 f"   ▫️{escape(info['site_name'])} ({escape(info['site_code'])}) "
-                f"[{state}]: {types_label}, MLL {hours_since}."
+                f"[{state}]: {types_label}: {hours_since}."
             )
     else:
         lines.append("   ▫️Không có.")
