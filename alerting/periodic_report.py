@@ -44,7 +44,7 @@ def format_periodic_report(groups: list, breakdown: dict, report_time: datetime)
             ]
             group_start = min(starts) if starts else None
             hours_since = _format_hours_since(group_start, report_time)
-            suffix = f", mất liên lạc {hours_since}" if group_start is not None else ""
+            suffix = f", MLL {hours_since}" if group_start is not None else ""
             lines.append(
                 f"   ▫️{node_name} ({node_code}): "
                 f"{len(group.station_site_ids)} trạm ảnh hưởng{suffix}."
@@ -68,11 +68,11 @@ def format_periodic_report(groups: list, breakdown: dict, report_time: datetime)
                 }
             )
             types_label = ", ".join(escape(value) for value in device_types) or "không xác định"
-            state = "full-down" if info["all_down"] else "partial-down"
+            state = "F-down" if info["all_down"] else "P-down"
             hours_since = _format_hours_since(info.get("earliest_loss_comm_start"), report_time)
             lines.append(
                 f"   ▫️{escape(info['site_name'])} ({escape(info['site_code'])}) "
-                f"[{state}]: {types_label}, mất liên lạc {hours_since}."
+                f"[{state}]: {types_label}, MLL {hours_since}."
             )
     else:
         lines.append("   ▫️Không có.")
