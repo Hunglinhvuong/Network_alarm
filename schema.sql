@@ -10,7 +10,7 @@ CREATE TABLE node (
 -- 2. BẢNG TRẠM PHÁT SÓNG (KẾ THỪA TỪ NODE)
 CREATE TABLE station (
     site_id       BIGINT PRIMARY KEY REFERENCES node(node_id) ON DELETE CASCADE,
-    site_code     VARCHAR(20) NOT NULL UNIQUE,
+    site_code     VARCHAR(30) NOT NULL UNIQUE,
     site_name     VARCHAR(100) NOT NULL,
     lat           DOUBLE PRECISION NOT NULL,
     long          DOUBLE PRECISION NOT NULL,
@@ -29,10 +29,11 @@ CREATE TABLE trans_node (
 -- 4. BẢNG THIẾT BỊ
 CREATE TABLE device (
     device_id     BIGSERIAL PRIMARY KEY,
-    device_code   VARCHAR(20) NOT NULL UNIQUE,
+    device_code   VARCHAR(30) NOT NULL UNIQUE,
     device_name   VARCHAR(100),
     site_id       BIGINT NOT NULL REFERENCES station(site_id) ON DELETE CASCADE,
     type          VARCHAR(5) NOT NULL CHECK (type IN ('3G', '4G', '5G')),
+    num_cell      INTEGER CHECK (num_cell IS NULL OR num_cell >= 0),
     created_at    TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX idx_device_site ON device(site_id);

@@ -87,6 +87,7 @@ psql -h localhost -U postgres -d network_alarm -f db/telegram_outbox.sql
 
 Với database đã có, backup trước; nếu `topo_link` còn dùng `child_site_id` /
 `parent_site_id`, chạy `db/migrate_topology_nodes.sql`. Luôn áp dụng
+`db/migrate_device_num_cell.sql` để thêm số cell thiết bị, cùng
 `db/telegram_outbox.sql` để tạo/cập nhật outbox. Installer kiểm tra kết nối và
 các bảng cần thiết, không tự chạy schema hoặc migration.
 
@@ -190,13 +191,18 @@ Chỉ cần đổi ENV, không sửa code:
 ```bash
 export ALARM_SOURCE=oracle
 export ORACLE_HOST=... ORACLE_PORT=1521 ORACLE_SERVICE=... ORACLE_USER=... ORACLE_PASSWORD=...
-export ORACLE_ALARM_TABLE=ALARM_ACTIVE
+export ORACLE_ALARM_TABLE=soca.R_ALARM_LOG_ACTIVE
 ```
 
-⚠️ `collectors/oracle_collector.py` hiện đang **giả định** cấu trúc bảng
-(`DEVICE_CODE`, `ALARM_NAME`, `START_TIME`, `END_TIME`). Cần xác nhận lại schema
-thật với đội quản lý hệ thống nguồn rồi chỉnh `_build_query()` / `_map_row()` /
-`ALARM_NAME_MAP` cho khớp.
+Collector đọc `SITE`, `CELLID`, `SDATE`, `EDATE`, `ALARM_TYPE`, `SEVERITY`,
+`ALARM_NAME`, `NETWORK` và `PROVINCE` từ `soca.R_ALARM_LOG_ACTIVE`, lọc alarm
+đang active của Nghệ An trong 7 ngày gần nhất. `NETWORK=3G` và `RAN_4G` dùng
+`SITE` làm `device_code`; `RAN_5G` đổi hậu tố thành `_5G`. Alarm `POWER` map
+thành `power_fail`. Alarm `SERVICE` map thành `loss_comm` khi có `NE Is
+Disconnected`, ưu tiên hơn nhóm alarm cell; nếu không có, số `CELLID` khác nhau
+phải đạt ít nhất 2/3 `device.num_cell`. `NumCell` cần được nạp vào PostgreSQL
+trước khi dùng điều kiện theo cell. `ORACLE_ALARM_TABLE` nhận tên bảng hoặc
+`schema.tên_bảng`.
 
 Oracle collector giới hạn TCP connect mặc định 5 giây và mỗi call 10 giây; có
 thể chỉnh bằng `ORACLE_CONNECT_TIMEOUT_SEC` và `ORACLE_CALL_TIMEOUT_MS`.
@@ -334,6 +340,9 @@ Sửa CSV theo các quy tắc sau:
   vừa thay đổi.
 - **Đổi thông tin trạm/thiết bị:** sửa dòng có cùng `site_code` hoặc
   `device_code`; import sẽ cập nhật thông tin theo mã đó.
+- **Số cell của thiết bị:** thêm cột `NumCell` vào `device.csv` và điền số
+  nguyên không âm; có thể để trống nếu nguồn chưa có số liệu. Importer cũng
+  nhận các tên cột `num_cell` và `numcell`.
 
 Chạy import, kiểm tra DB, rồi đồng bộ lại cạnh lân cận. Các script đọc đường dẫn
 CSV tương đối từ thư mục hiện hành nên phải chạy từ `inputdata/`:
@@ -442,8 +451,6 @@ Kiểm tra sau khi triển khai:
 
 ## Hạng mục còn lại và lưu ý vận hành
 
-- Xác nhận schema thật của Oracle trước khi dùng `ALARM_SOURCE=oracle`; adapter
-  hiện giả định các cột `DEVICE_CODE`, `ALARM_NAME`, `START_TIME`, `END_TIME`.
 - Dashboard map/tree chưa được triển khai.
 - `alarm_event` có thể tăng nhanh trên SSD nhỏ; cần thiết kế partition theo
   tháng hoặc job lưu trữ/xóa dữ liệu cũ trước khi vận hành dài hạn.

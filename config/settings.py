@@ -41,9 +41,7 @@ ORACLE_COLLECTOR_CONFIG = {
     "service_name": os.environ.get("ORACLE_SERVICE", ""),
     "user": os.environ.get("ORACLE_USER", ""),
     "password": os.environ.get("ORACLE_PASSWORD", ""),
-    # Giả định tên bảng/cột phía Oracle — CẦN xác nhận lại khi có schema thật.
-    # Xem ghi chú TODO trong collectors/oracle_collector.py
-    "table": os.environ.get("ORACLE_ALARM_TABLE", "ALARM_ACTIVE"),
+    "table": os.environ.get("ORACLE_ALARM_TABLE", "soca.R_ALARM_LOG_ACTIVE"),
 }
 ORACLE_CONNECT_TIMEOUT_SEC = float(os.environ.get("ORACLE_CONNECT_TIMEOUT_SEC", 5))
 ORACLE_CALL_TIMEOUT_MS = int(os.environ.get("ORACLE_CALL_TIMEOUT_MS", 10000))

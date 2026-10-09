@@ -1,4 +1,5 @@
 import numpy as np
+from collections import defaultdict
 from scipy.spatial import Delaunay
 import psycopg2
 from psycopg2.extras import execute_values
@@ -12,6 +13,7 @@ DB_CONFIG = dict(
 
 MAX_DISTANCE_KM = 7.0
 EARTH_RADIUS_KM = 6371.0
+COORD_PRECISION = 6  # ~0.1m, dùng để gom các trạm trùng toạ độ
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -26,39 +28,81 @@ def fetch_active_stations(cur):
     cur.execute("""
         SELECT site_id, lat, long FROM station
         WHERE status = 'active'
+          AND lat IS NOT NULL AND long IS NOT NULL
     """)
     rows = cur.fetchall()
-    if len(rows) < 4:
+
+    # Dedupe theo site_id (giữ bản ghi đầu tiên), ép về float
+    seen = {}
+    dup_ids = 0
+    for site_id, lat, lon in rows:
+        if site_id in seen:
+            dup_ids += 1
+            continue
+        seen[site_id] = (site_id, float(lat), float(lon))
+    if dup_ids:
+        print(f"[station] bỏ {dup_ids} bản ghi trùng site_id")
+
+    stations = list(seen.values())
+    if len(stations) < 4:
         raise ValueError(
-            f"Cần tối thiểu 4 station active để chạy Delaunay (hiện có {len(rows)})"
+            f"Cần tối thiểu 4 station active hợp lệ để chạy Delaunay (hiện có {len(stations)})"
         )
-    return rows
+    return stations
 
 
 def build_delaunay_edges(stations):
-    """stations: list[(site_id, lat, long)] -> set of (site_id_a, site_id_b) đã sort, distance <=7km"""
-    site_ids = [s[0] for s in stations]
-    coords = np.array([[s[2], s[1]] for s in stations])  # (long, lat) cho Delaunay phẳng
+    """stations: list[(site_id, lat, long)] -> list[(site_a, site_b, dist_km)] đã sort, unique, <= MAX_DISTANCE_KM"""
+    # Gom các trạm trùng toạ độ
+    groups = defaultdict(list)
+    for s in stations:
+        key = (round(s[1], COORD_PRECISION), round(s[2], COORD_PRECISION))
+        groups[key].append(s)
+
+    keys = list(groups.keys())
+    n_colocated = len(stations) - len(keys)
+    if n_colocated:
+        print(f"[station] {n_colocated} trạm trùng toạ độ -> gom nhóm, nối trực tiếp với nhau")
+    if len(keys) < 4:
+        raise ValueError(f"Chỉ có {len(keys)} toạ độ khác nhau, không đủ để chạy Delaunay")
+
+    # Chiếu phẳng (equirectangular) để Delaunay không bị méo theo kinh độ
+    lats = np.array([k[0] for k in keys])
+    lons = np.array([k[1] for k in keys])
+    lat0 = np.radians(lats.mean())
+    coords = np.column_stack([lons * np.cos(lat0), lats])
 
     tri = Delaunay(coords)
 
     raw_edges = set()
-    for simplex in tri.simplices:
-        i, j, k = simplex
+    for i, j, k in tri.simplices:
         raw_edges.add(tuple(sorted((i, j))))
         raw_edges.add(tuple(sorted((j, k))))
         raw_edges.add(tuple(sorted((i, k))))
 
-    valid_edges = []
-    for i, j in raw_edges:
-        site_a, lat_a, lon_a = stations[i]
-        site_b, lat_b, lon_b = stations[j]
-        dist = haversine_km(lat_a, lon_a, lat_b, lon_b)
-        if dist <= MAX_DISTANCE_KM:
-            a, b = sorted((site_a, site_b))
-            valid_edges.append((a, b, round(float(dist), 3)))
+    edges = {}
 
-    return valid_edges
+    def add_edge(sa, sb):
+        if sa[0] == sb[0]:
+            return
+        dist = float(haversine_km(sa[1], sa[2], sb[1], sb[2]))
+        if dist <= MAX_DISTANCE_KM:
+            a, b = sorted((sa[0], sb[0]))
+            edges[(a, b)] = round(dist, 3)
+
+    # Cạnh giữa các nhóm khác nhau (mở rộng ra mọi trạm trong nhóm)
+    for i, j in raw_edges:
+        for sa in groups[keys[i]]:
+            for sb in groups[keys[j]]:
+                add_edge(sa, sb)
+
+    # Cạnh nội bộ nhóm trùng toạ độ
+    for members in groups.values():
+        for x in range(len(members)):
+            for y in range(x + 1, len(members)):
+                add_edge(members[x], members[y])
+
+    return [(a, b, d) for (a, b), d in edges.items()]
 
 
 def sync_neighbor_edges(cur, edges):

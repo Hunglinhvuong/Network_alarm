@@ -33,3 +33,18 @@ def get_device_id(device_code):
         refresh_cache()
         device_id = _device_cache.get(device_code)
     return device_id
+
+
+def get_device_num_cells(device_codes):
+    """Trả về device_code -> num_cell cho một nhóm mã thiết bị."""
+    device_codes = sorted(set(device_codes))
+    if not device_codes:
+        return {}
+
+    with get_cursor(dict_cursor=True, commit=False) as cur:
+        cur.execute(
+            "SELECT device_code, num_cell FROM device WHERE device_code = ANY(%s)",
+            (device_codes,),
+        )
+        rows = cur.fetchall()
+    return {row["device_code"]: row["num_cell"] for row in rows}

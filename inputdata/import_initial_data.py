@@ -82,17 +82,27 @@ def import_devices(cur, rows):
         if site_id is None:
             print(f"[device] BỎ QUA {r['device_code']}: site_code {r['site_code']} không tồn tại")
             continue
-        data.append((r["device_code"], r["device_name"], site_id, r["type"]))
+        raw_num_cell = r.get("NumCell") or r.get("num_cell") or r.get("numcell")
+        try:
+            num_cell = int(raw_num_cell) if raw_num_cell and raw_num_cell.strip() else None
+        except ValueError as exc:
+            raise ValueError(
+                f"NumCell không hợp lệ cho device {r['device_code']}: {raw_num_cell!r}"
+            ) from exc
+        if num_cell is not None and num_cell < 0:
+            raise ValueError(f"NumCell không được âm cho device {r['device_code']}: {num_cell}")
+        data.append((r["device_code"], r["device_name"], site_id, r["type"], num_cell))
 
     execute_values(
         cur,
         """
-        INSERT INTO device (device_code, device_name, site_id, type)
+        INSERT INTO device (device_code, device_name, site_id, type, num_cell)
         VALUES %s
         ON CONFLICT (device_code) DO UPDATE
         SET device_name = EXCLUDED.device_name,
             site_id = EXCLUDED.site_id,
-            type = EXCLUDED.type
+            type = EXCLUDED.type,
+            num_cell = EXCLUDED.num_cell
         """,
         data,
     )
